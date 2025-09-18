@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
+import { useMemo } from 'react';
+import { shallow } from 'zustand/shallow';
 import type { PaymentEvent, PaymentBatch } from '../lib/bsv/payment-event-batcher';
 
 export interface TorrentPeer {
@@ -344,14 +346,18 @@ export const useBSVTorrentStore = create<BSVTorrentState & { actions: BSVTorrent
       // Connection and health
       setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
 
-      updateOverlayHealth: (health) => set(state => ({
-        overlayHealth: {
+      updateOverlayHealth: (health) => set(state => {
+        const updatedHealth = {
           ...state.overlayHealth,
-          ...health,
-          isHealthy: Object.values(health.connections || state.overlayHealth.connections)
-            .every(status => status === true)
-        }
-      })),
+          ...health
+        };
+
+        // Calculate isHealthy based on all connections
+        const connections = health.connections || state.overlayHealth.connections;
+        updatedHealth.isHealthy = Object.values(connections).every(status => status === true);
+
+        return { overlayHealth: updatedHealth };
+      }),
 
       updateNetworkStats: (stats) => set(state => ({
         networkStats: { ...state.networkStats, ...stats }
@@ -411,27 +417,32 @@ export const useBSVTorrentStore = create<BSVTorrentState & { actions: BSVTorrent
       getTorrentByHash: (infoHash) => get().torrents.get(infoHash),
 
       getActiveTorrents: () => {
-        const torrents = Array.from(get().torrents.values());
+        const state = get();
+        const torrents = Array.from(state.torrents.values());
         return torrents.filter(t => t.status !== 'completed' && t.status !== 'error');
       },
 
       getCompletedTorrents: () => {
-        const torrents = Array.from(get().torrents.values());
+        const state = get();
+        const torrents = Array.from(state.torrents.values());
         return torrents.filter(t => t.status === 'completed');
       },
 
       getSeedingTorrents: () => {
-        const torrents = Array.from(get().torrents.values());
+        const state = get();
+        const torrents = Array.from(state.torrents.values());
         return torrents.filter(t => t.status === 'seeding');
       },
 
       getDownloadingTorrents: () => {
-        const torrents = Array.from(get().torrents.values());
+        const state = get();
+        const torrents = Array.from(state.torrents.values());
         return torrents.filter(t => t.status === 'downloading');
       },
 
       getTotalStats: () => {
-        const torrents = Array.from(get().torrents.values());
+        const state = get();
+        const torrents = Array.from(state.torrents.values());
         return torrents.reduce((acc, torrent) => ({
           totalDownloaded: acc.totalDownloaded + (torrent.size * torrent.progress),
           totalUploaded: acc.totalUploaded + torrent.totalEarned / 17 * 16384, // Estimate upload from earnings
@@ -450,11 +461,21 @@ export const useConnectionStatus = () =>
 export const useWalletState = () =>
   useBSVTorrentStore(state => state.wallet);
 
-export const useTorrentPeers = (torrentId: string) =>
-  useBSVTorrentStore(state => state.torrents.get(torrentId)?.peers || []);
+export const useTorrentPeers = (torrentId: string) => {
+  const torrent = useBSVTorrentStore(state => state.torrents.get(torrentId));
 
-export const useTorrentPayments = (torrentId: string) =>
-  useBSVTorrentStore(state => state.paymentMetrics.recentPayments.filter(p => p.torrentId === torrentId));
+  return useMemo(() => {
+    return torrent?.peers || [];
+  }, [torrent]);
+};
+
+export const useTorrentPayments = (torrentId: string) => {
+  const recentPayments = useBSVTorrentStore(state => state.paymentMetrics.recentPayments);
+
+  return useMemo(() => {
+    return recentPayments.filter(p => p.torrentId === torrentId);
+  }, [recentPayments, torrentId]);
+};
 
 export const useOverlayHealth = () =>
   useBSVTorrentStore(state => state.overlayHealth);
@@ -465,14 +486,44 @@ export const usePaymentMetrics = () =>
 export const useNetworkStats = () =>
   useBSVTorrentStore(state => state.networkStats);
 
-export const useErrors = () =>
-  useBSVTorrentStore(state => state.errors.filter(e => !e.resolved));
+export const useErrors = () => {
+  const errors = useBSVTorrentStore(state => state.errors);
 
-export const useTorrents = () =>
-  useBSVTorrentStore(state => Array.from(state.torrents.values()));
+  return useMemo(() => {
+    return errors.filter(e => !e.resolved);
+  }, [errors]);
+};
 
-export const useActiveTorrents = () =>
-  useBSVTorrentStore(state => state.actions.getActiveTorrents());
+export const useTorrents = () => {
+  const torrents = useBSVTorrentStore(state => state.torrents);
 
-export const useTotalStats = () =>
-  useBSVTorrentStore(state => state.actions.getTotalStats());
+  return useMemo(() => {
+    return Array.from(torrents.values());
+  }, [torrents]);
+};
+
+export const useActiveTorrents = () => {
+  const torrents = useBSVTorrentStore(state => state.torrents);
+
+  return useMemo(() => {
+    return Array.from(torrents.values()).filter(t =>
+      t.status === 'downloading' || t.status === 'seeding'
+    );
+  }, [torrents]);
+};
+
+export const useTotalStats = () => {
+  const totalEarned = useBSVTorrentStore(state => state.paymentMetrics.totalEarned);
+  const totalPaid = useBSVTorrentStore(state => state.paymentMetrics.totalPaid);
+  const torrents = useBSVTorrentStore(state => state.torrents);
+
+  return useMemo(() => {
+    const torrentValues = Array.from(torrents.values());
+    return {
+      totalDownloaded: torrentValues.reduce((sum, t) => sum + (t.size * t.progress), 0),
+      totalUploaded: torrentValues.reduce((sum, t) => sum + (t.totalEarned / 17 * 16384), 0), // Estimate upload from earnings
+      totalEarnings: totalEarned,
+      totalSpent: totalPaid,
+    };
+  }, [totalEarned, totalPaid, torrents]);
+};

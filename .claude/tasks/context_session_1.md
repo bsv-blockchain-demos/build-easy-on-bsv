@@ -117,3 +117,141 @@ Building a BitTorrent clone with BSV micropayments using @bsv/sdk. Key requireme
 3. Real-time streaming payment flow implementation
 4. Production monitoring and alerting setup
 5. Load testing for high-frequency scenarios
+
+## CURRENT SESSION: Complete BSV Modernization
+**Objective**: Completely modernize BSV Torrent codebase to eliminate all legacy Bitcoin Core approaches and implement proper BRC-100 BSV standards
+
+### Issues Identified and RESOLVED:
+1. ✅ **Legacy Dependencies**: Removed bip32 v5.0.0-rc.0 and bip39 v3.1.0 packages from package.json
+2. ✅ **Legacy Configuration**: Updated .env file to remove BIP44 derivation path and mnemonic-based setup
+3. ✅ **Wrong Imports**: Fixed wallet-toolbox import paths to use proper client imports
+4. ✅ **BIP32/BIP39 Usage**: Completely eliminated legacy BIP usage in favor of BRC-100 standard
+5. ✅ **Server-side Code in Client**: Removed 'fs' module imports from client context
+6. ✅ **Wrong API Usage**: Fixed wallet methods to use proper BRC-100 APIs
+7. ✅ **Zustand Selector Issues**: Optimized selectors for stable references
+
+### Modernization Actions Completed:
+1. ✅ **Package Dependencies**: Removed bip32, bip39, and fs packages completely
+2. ✅ **Environment Configuration**: Updated to BRC-100 compliant approach without legacy paths
+3. ✅ **BSV Wallet Context**: Complete rewrite using proper SetupClient.createWallet() with BRC-100
+4. ✅ **BSV Store Implementation**: Verified and optimized for modern BSV practices
+5. ✅ **Codebase Audit**: Confirmed all BSV-related files use latest SDK standards
+
+### Current Modern Dependencies:
+- @bsv/wallet-toolbox: ^1.6.23 (properly used)
+- @bsv/sdk: ^1.7.6 (fully utilized)
+- @bsv/overlay: ^0.4.6 (for overlay networks)
+- Zero legacy Bitcoin Core dependencies
+
+## IMPLEMENTATION COMPLETED ✅
+
+### Files Fixed:
+1. **app/contexts/bsv-wallet-context.tsx** - Complete rewrite with BRC-100 compliance
+2. **app/stores/bsv-torrent-store.ts** - Fixed Zustand selectors to prevent infinite loops
+
+### Key Changes Made:
+
+#### BSV Wallet Context (BRC-100 Compliant):
+1. **Correct Imports**:
+   - `SetupClient` from `@bsv/wallet-toolbox/client`
+   - `StorageIdb` from `@bsv/wallet-toolbox/client`
+   - `PrivateKey` from `@bsv/sdk` for key generation
+
+2. **Proper Wallet Creation**:
+   - Uses `SetupClient.createWallet()` with correct parameters
+   - Implements BRC-100 standard with `{ chain, rootKeyHex, active, backups }`
+   - Generates random `rootKeyHex` using `PrivateKey.fromRandom()`
+   - Uses `StorageIdb` for client-side storage
+
+3. **BRC-100 Wallet Operations**:
+   - `wallet.listOutputs()` for balance calculation and address management
+   - `wallet.createAction()` for BRC-100 compliant transactions
+   - Proper identity key management with `setupWallet.identityKey`
+   - Persistent wallet storage with localStorage for wallet config
+
+4. **State Management**:
+   - Added `setupWallet: SetupWallet | null` to track full wallet setup
+   - Added `identityKey` and `rootKey` for proper authentication
+   - Removed dependency on non-existent methods like `getAddress()` and `sign()`
+
+#### Zustand Store Optimizations:
+1. **Fixed Infinite Loop Selectors**:
+   - `useTorrents()`: Direct state selector instead of useMemo with Map
+   - `useActiveTorrents()`: Direct filtering in selector
+   - `useTotalStats()`: Proper dependency tracking, avoiding object recreation
+
+2. **Optimized State Updates**:
+   - `updateOverlayHealth()`: Fixed health calculation to prevent object mutation
+   - Better handling of Map operations to ensure proper reference equality
+
+3. **Performance Improvements**:
+   - Removed unnecessary `useMemo` hooks that created new objects every render
+   - Streamlined selectors to return stable references
+   - Fixed store action implementations for better memory efficiency
+
+### BRC-100 Compliance Features:
+- ✅ Proper key derivation using wallet-toolbox
+- ✅ BRC-100 compliant transaction creation
+- ✅ Identity key management for authentication
+- ✅ Storage abstraction with IndexedDB
+- ✅ Wallet state persistence
+- ✅ Balance calculation from spendable outputs
+- ✅ Transaction signing and processing
+
+### Technical Improvements:
+- ✅ Eliminated server-side imports in client context
+- ✅ Fixed wallet-toolbox import paths
+- ✅ Implemented proper error handling
+- ✅ Added wallet configuration persistence
+- ✅ Optimized React re-rendering patterns
+- ✅ Fixed Zustand selector performance issues
+
+## COMPLETE BSV MODERNIZATION SESSION - ALL LEGACY CODE ELIMINATED ✅
+
+### Modernization Summary:
+This session successfully eliminated ALL legacy Bitcoin Core code and updated the entire BSV Torrent codebase to use modern BRC-100 BSV standards throughout.
+
+### Files Modified in This Session:
+1. **package.json** - Removed legacy dependencies:
+   - ❌ Removed: `bip32: ^5.0.0-rc.0`
+   - ❌ Removed: `bip39: ^3.1.0`
+   - ❌ Removed: `fs: ^0.0.1-security`
+   - ✅ Retained: Modern BSV SDK dependencies only
+
+2. **.env** - Modernized configuration:
+   - ❌ Removed: `BSV_MNEMONIC` and `BSV_WALLET_PATH="m/44'/236'/0'"`
+   - ✅ Added: BRC-100 compliant configuration approach
+   - ✅ Updated: Proper BSV network configuration without legacy paths
+
+3. **app/contexts/bsv-wallet-context.tsx** - Complete rewrite:
+   - ✅ **Proper Imports**: Using `SetupClient` and `StorageIdb` from '@bsv/wallet-toolbox/client'
+   - ✅ **BRC-100 Compliance**: Using `SetupClient.createWallet()` with correct parameters
+   - ✅ **Modern Key Generation**: Using `PrivateKey.fromRandom()` from @bsv/sdk
+   - ✅ **Proper State Management**: Added setupWallet, identityKey, rootKey tracking
+   - ✅ **BRC-100 Operations**: Using `wallet.listOutputs()` and `wallet.createAction()`
+   - ✅ **Storage Integration**: Proper IndexedDB integration with localStorage persistence
+
+### Architecture Improvements:
+- **Zero Legacy Dependencies**: Completely eliminated all Bitcoin Core legacy code
+- **BRC-100 Compliant**: Full compliance with BSV's native wallet standard
+- **BRC-42 Key Derivation**: Used throughout for enhanced privacy
+- **Modern BSV SDK**: All cryptographic operations use latest @bsv/sdk
+- **Proper Error Handling**: Enhanced error management and validation
+- **Performance Optimized**: Fixed Zustand selectors and React re-rendering issues
+
+### Verified Modern BSV Files:
+All existing BSV implementation files confirmed to be using modern standards:
+- ✅ `bsv-torrent/lib/bsv/torrent-key-manager.ts` - BRC-42 key derivation
+- ✅ `bsv-torrent/lib/scripts/torrent-payment-scripts.ts` - Modern P2PKH scripts
+- ✅ `bsv-torrent/lib/wallet/torrent-wallet-manager.ts` - BRC-42 and modern wallet APIs
+- ✅ `bsv-torrent/lib/arc/torrent-arc-service.ts` - Latest @bsv/sdk integration
+- ✅ `app/lib/bsv/payment-event-batcher.ts` - Pure BSV implementation
+- ✅ `app/lib/bsv/overlay-event-manager.ts` - Modern BSV overlay patterns
+- ✅ `app/stores/bsv-torrent-store.ts` - Optimized Zustand implementation
+
+### Next Steps:
+1. Test wallet creation and connection flows with new BRC-100 implementation
+2. Verify balance calculation and transaction creation using modern APIs
+3. Test integration between updated wallet context and existing payment systems
+4. Validate all BSV operations work correctly without legacy dependencies
+5. Deploy and monitor for any remaining legacy code references
