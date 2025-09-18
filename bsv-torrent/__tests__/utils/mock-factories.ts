@@ -5,7 +5,7 @@
 
 import { jest } from '@jest/globals';
 import { PrivateKey, PublicKey, Transaction } from '@bsv/sdk';
-import BSVTestUtils from './bsv-test-utils.js';
+import BSVTestUtils from './bsv-test-utils';
 
 export class MockFactories {
   /**
@@ -49,6 +49,12 @@ export class MockFactories {
       derivePublicKey: jest.fn().mockImplementation((path: string, context?: string) => {
         const seed = path + (context || '');
         return BSVTestUtils.generateTestPrivateKey(seed).toPublicKey();
+      }),
+
+      // Combined key derivation for TorrentClient compatibility
+      deriveKey: jest.fn().mockImplementation((path: string, context?: string) => {
+        const seed = path + (context || '');
+        return BSVTestUtils.generateTestPrivateKey(seed);
       }),
 
       // Storage and services
@@ -443,11 +449,35 @@ export class MockFactories {
 
       lookup: jest.fn().mockImplementation(async (criteria: any) => {
         // Mock peer lookup based on criteria
-        return [
-          BSVTestUtils.generateTestPeerData('peer1'),
-          BSVTestUtils.generateTestPeerData('peer2'),
+        const mockPeers = [
+          {
+            peerId: 'peer1',
+            address: '192.168.1.100',
+            port: 6881,
+            capabilities: ['seeding'],
+            bandwidth: 1000000,
+            reputationScore: 75
+          },
+          {
+            peerId: 'peer2',
+            address: '192.168.1.101',
+            port: 6882,
+            capabilities: ['seeding'],
+            bandwidth: 2000000,
+            reputationScore: 85
+          },
         ];
+        return mockPeers;
       }),
+
+      // Additional methods needed by TorrentClient
+      discoverPeers: jest.fn().mockResolvedValue([
+        { peerId: 'peer1', address: '192.168.1.1', port: 6881, reputation: 85 },
+        { peerId: 'peer2', address: '192.168.1.2', port: 6882, reputation: 92 }
+      ]),
+      registerContent: jest.fn().mockResolvedValue('content-id-123'),
+      reportMaliciousPeer: jest.fn().mockResolvedValue({ reported: true }),
+      verifyContent: jest.fn().mockResolvedValue({ isValid: true, registeredBy: 'content-creator', registrationTx: 'tx-123' }),
     };
   }
 
@@ -461,6 +491,115 @@ export class MockFactories {
       }
     }
     return true;
+  }
+
+  /**
+   * Mock micropayment manager
+   */
+  static createMockMicropaymentManager() {
+    const channels = new Map<string, any>();
+    const payments = new Map<string, any>();
+
+    return {
+      processBlockPayment: jest.fn().mockResolvedValue({
+        txid: 'mock-micropayment-txid',
+        amount: 17,
+        blockIndex: 0,
+        confirmed: true,
+        success: true,
+      }),
+
+      processBlockPaymentWithRetry: jest.fn().mockResolvedValue({
+        txid: 'mock-retry-txid',
+        amount: 17,
+        blockIndex: 0,
+        confirmed: true,
+        success: true,
+        retryCount: 0,
+      }),
+
+      createStreamingChannel: jest.fn().mockImplementation(async (params: any) => {
+        const channelId = `channel-${Date.now()}`;
+        const channel = {
+          channelId,
+          maxBalance: params.maxChannelBalance,
+          ratePerBlock: params.ratePerBlock,
+          status: 'open',
+          remainingBalance: params.maxChannelBalance,
+          paymentsProcessed: 0,
+        };
+        channels.set(channelId, channel);
+        return channel;
+      }),
+
+      initializeChannel: jest.fn().mockImplementation(async (params: any) => {
+        const channel = {
+          channelId: params.channelId,
+          maxBalance: params.initialBalance,
+          ratePerBlock: params.ratePerBlock,
+          status: 'open',
+          remainingBalance: params.initialBalance,
+          paymentsProcessed: 0,
+        };
+        channels.set(params.channelId, channel);
+        return channel;
+      }),
+
+      streamPayment: jest.fn().mockImplementation(async (channelId: string, params: any) => {
+        const channel = channels.get(channelId);
+        if (channel) {
+          channel.remainingBalance -= params.amount;
+          channel.paymentsProcessed += 1;
+        }
+      }),
+
+      getChannelStatus: jest.fn().mockImplementation(async (channelId: string) => {
+        return channels.get(channelId);
+      }),
+
+      settleChannel: jest.fn().mockImplementation(async (channelId: string) => {
+        const channel = channels.get(channelId);
+        if (channel) {
+          const finalAmount = channel.maxBalance - channel.remainingBalance;
+          const refundAmount = channel.remainingBalance;
+          channel.status = 'closed';
+          channels.delete(channelId);
+          return { settled: true, finalAmount, refundAmount };
+        }
+        throw new Error('Channel not found');
+      }),
+
+      batchProcessPayments: jest.fn().mockResolvedValue({
+        totalAmount: 1700,
+        transactionCount: 10,
+        efficiency: 0.9,
+      }),
+
+      calculateSeederIncentive: jest.fn().mockResolvedValue({
+        bonusAmount: 50,
+        bonusRate: 1.5,
+        totalIncentive: 150,
+      }),
+
+      getPaymentAnalytics: jest.fn().mockResolvedValue({
+        totalPayments: 100,
+        totalAmount: 1700,
+        averagePayment: 17,
+        paymentRate: 1.5,
+      }),
+
+      // Additional methods needed by TorrentClient
+      closeChannel: jest.fn().mockResolvedValue({ closed: true }),
+      verifyPayment: jest.fn().mockResolvedValue(true),
+      processPayment: jest.fn().mockResolvedValue({ txid: 'payment-tx', amount: 17, confirmed: false }),
+      reopenChannel: jest.fn().mockResolvedValue(true),
+      retryPayment: jest.fn().mockResolvedValue({ success: true }),
+      collectPayment: jest.fn().mockResolvedValue({ txid: 'collect-tx', amount: 17, confirmed: false }),
+      optimizeChannel: jest.fn().mockResolvedValue({ optimized: true }),
+      pauseChannel: jest.fn().mockResolvedValue({ paused: true }),
+      resumeChannel: jest.fn().mockResolvedValue({ resumed: true }),
+      persistState: jest.fn().mockResolvedValue({ persisted: true }),
+    };
   }
 
   /**
@@ -494,6 +633,154 @@ export class MockFactories {
 
       getReputation: jest.fn().mockImplementation(async (peerId: string) => {
         return reputations.get(peerId) || { score: 50, uploads: 0, downloads: 0 };
+      }),
+    };
+  }
+
+  /**
+   * Mock storage provider (MongoDB-like interface)
+   */
+  static createMockStorageProvider() {
+    const documents = new Map<string, any>();
+    let idCounter = 1;
+
+    return {
+      insertOne: jest.fn().mockImplementation(async (doc: any) => {
+        const _id = doc._id || (idCounter++).toString();
+        const newDoc = { ...doc, _id, insertedAt: new Date().toISOString() };
+        documents.set(_id, newDoc);
+        return { insertedId: _id, acknowledged: true };
+      }),
+
+      findOne: jest.fn().mockImplementation(async (query: any) => {
+        for (const doc of documents.values()) {
+          if (this.matchesQuery(doc, query)) {
+            return doc;
+          }
+        }
+        return null;
+      }),
+
+      find: jest.fn().mockImplementation((query: any) => ({
+        toArray: async () => {
+          const results = [];
+          for (const doc of documents.values()) {
+            if (this.matchesQuery(doc, query)) {
+              results.push(doc);
+            }
+          }
+          return results;
+        },
+        limit: jest.fn().mockReturnThis(),
+        sort: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+      })),
+
+      updateOne: jest.fn().mockImplementation(async (query: any, update: any) => {
+        for (const [id, doc] of documents.entries()) {
+          if (this.matchesQuery(doc, query)) {
+            const updatedDoc = { ...doc, ...update, updatedAt: new Date().toISOString() };
+            documents.set(id, updatedDoc);
+            return { modifiedCount: 1, acknowledged: true };
+          }
+        }
+        return { modifiedCount: 0, acknowledged: true };
+      }),
+
+      deleteOne: jest.fn().mockImplementation(async (query: any) => {
+        for (const [id, doc] of documents.entries()) {
+          if (this.matchesQuery(doc, query)) {
+            documents.delete(id);
+            return { deletedCount: 1, acknowledged: true };
+          }
+        }
+        return { deletedCount: 0, acknowledged: true };
+      }),
+
+      countDocuments: jest.fn().mockImplementation(async (query: any) => {
+        let count = 0;
+        for (const doc of documents.values()) {
+          if (this.matchesQuery(doc, query)) {
+            count++;
+          }
+        }
+        return count;
+      }),
+
+      // Additional methods for testing
+      clear: jest.fn().mockImplementation(() => {
+        documents.clear();
+      }),
+
+      getAll: jest.fn().mockImplementation(() => {
+        return Array.from(documents.values());
+      }),
+
+      size: jest.fn().mockImplementation(() => {
+        return documents.size;
+      }),
+    };
+  }
+
+  /**
+   * Mock overlay network
+   */
+  static createMockOverlayNetwork() {
+    const subscriptions = new Map<string, Function[]>();
+    const messages = new Map<string, any[]>();
+
+    return {
+      subscribe: jest.fn().mockImplementation((topic: string, callback: Function) => {
+        if (!subscriptions.has(topic)) {
+          subscriptions.set(topic, []);
+        }
+        subscriptions.get(topic)!.push(callback);
+      }),
+
+      unsubscribe: jest.fn().mockImplementation((topic: string, callback: Function) => {
+        const callbacks = subscriptions.get(topic);
+        if (callbacks) {
+          const index = callbacks.indexOf(callback);
+          if (index > -1) {
+            callbacks.splice(index, 1);
+          }
+        }
+      }),
+
+      publish: jest.fn().mockImplementation(async (topic: string, message: any) => {
+        if (!messages.has(topic)) {
+          messages.set(topic, []);
+        }
+        messages.get(topic)!.push(message);
+
+        // Notify subscribers
+        const callbacks = subscriptions.get(topic) || [];
+        callbacks.forEach(callback => callback(message));
+
+        return { messageId: `msg-${Date.now()}`, timestamp: Date.now() };
+      }),
+
+      lookup: jest.fn().mockImplementation(async (criteria: any) => {
+        // Mock peer lookup based on criteria
+        const mockPeers = [
+          {
+            peerId: 'peer1',
+            address: '192.168.1.100',
+            port: 6881,
+            capabilities: ['seeding'],
+            bandwidth: 1000000,
+            reputationScore: 75,
+          },
+          {
+            peerId: 'peer2',
+            address: '192.168.1.101',
+            port: 6882,
+            capabilities: ['seeding', 'payment'],
+            bandwidth: 2000000,
+            reputationScore: 85,
+          },
+        ];
+        return mockPeers;
       }),
     };
   }

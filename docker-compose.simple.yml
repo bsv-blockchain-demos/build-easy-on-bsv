@@ -1,0 +1,56 @@
+services:
+  # Next.js Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: bsv-torrent-app-dev
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      MONGODB_URI: mongodb://mongodb:27017/bsv-torrent
+      MONGODB_DB: bsv-torrent
+      BSV_NETWORK: testnet
+      BSV_MNEMONIC: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+      BSV_WALLET_PATH: "m/44'/236'/0'"
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_PUBLIC_BSV_NETWORK: testnet
+      NEXT_TELEMETRY_DISABLED: 1
+      WATCHPACK_POLLING: true
+    depends_on:
+      - mongodb
+      - redis
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0-jammy
+    container_name: bsv-torrent-mongodb-dev
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: bsv-torrent
+    volumes:
+      - mongodb-data:/data/db
+      - ./docker/mongodb/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: bsv-torrent-redis-dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+
+volumes:
+  mongodb-data:
+  redis-data:

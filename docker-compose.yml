@@ -1,0 +1,122 @@
+version: '3.8'
+
+services:
+  # Next.js Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    container_name: bsv-torrent-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb://mongodb:27017/bsv-torrent
+      MONGODB_DB: bsv-torrent
+
+      # BSV Configuration (update with your values)
+      BSV_NETWORK: testnet
+      BSV_MNEMONIC: ${BSV_MNEMONIC:-"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"}
+      BSV_WALLET_PATH: "m/44'/236'/0'"
+
+      # ARC Configuration
+      ARC_URL: ${ARC_URL:-"https://arc.taal.com"}
+      ARC_API_KEY: ${ARC_API_KEY:-""}
+
+      # Overlay Services
+      OVERLAY_SERVICE_URL: ${OVERLAY_SERVICE_URL:-"https://overlay.example.com"}
+      OVERLAY_API_KEY: ${OVERLAY_API_KEY:-""}
+
+      # Application Settings
+      NEXT_PUBLIC_APP_URL: ${APP_URL:-"http://localhost:3000"}
+      NEXT_PUBLIC_BSV_NETWORK: ${BSV_NETWORK:-"testnet"}
+
+    depends_on:
+      - mongodb
+    networks:
+      - bsv-torrent-network
+    volumes:
+      # Persist uploads and torrent data
+      - torrent-data:/app/data
+      - uploads:/app/uploads
+
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0-jammy
+    container_name: bsv-torrent-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-changeme}
+      MONGO_INITDB_DATABASE: bsv-torrent
+    volumes:
+      - mongodb-data:/data/db
+      - mongodb-config:/data/configdb
+      - ./docker/mongodb/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    networks:
+      - bsv-torrent-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Redis Cache (for session management and caching)
+  redis:
+    image: redis:7-alpine
+    container_name: bsv-torrent-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - bsv-torrent-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Nginx Reverse Proxy (optional, for production)
+  nginx:
+    image: nginx:alpine
+    container_name: bsv-torrent-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/ssl:/etc/nginx/ssl:ro
+      - nginx-cache:/var/cache/nginx
+    depends_on:
+      - app
+    networks:
+      - bsv-torrent-network
+    profiles:
+      - production
+
+networks:
+  bsv-torrent-network:
+    driver: bridge
+
+volumes:
+  mongodb-data:
+    driver: local
+  mongodb-config:
+    driver: local
+  redis-data:
+    driver: local
+  torrent-data:
+    driver: local
+  uploads:
+    driver: local
+  nginx-cache:
+    driver: local

@@ -17,6 +17,7 @@ const config = {
   testTimeout: 30000,
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',
+    '^webtorrent$': '<rootDir>/bsv-torrent/__tests__/__mocks__/webtorrent.ts',
   },
   collectCoverageFrom: [
     'app/**/*.{js,jsx,ts,tsx}',
