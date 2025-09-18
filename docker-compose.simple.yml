@@ -7,7 +7,7 @@ services:
     container_name: bsv-torrent-app-dev
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
       NODE_ENV: development
       MONGODB_URI: mongodb://mongodb:27017/bsv-torrent
@@ -15,7 +15,7 @@ services:
       BSV_NETWORK: testnet
       BSV_MNEMONIC: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
       BSV_WALLET_PATH: "m/44'/236'/0'"
-      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_PUBLIC_APP_URL: http://localhost:3001
       NEXT_PUBLIC_BSV_NETWORK: testnet
       NEXT_TELEMETRY_DISABLED: 1
       WATCHPACK_POLLING: true
