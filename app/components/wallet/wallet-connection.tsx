@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -16,25 +16,16 @@ import {
 } from '@/components/ui/dialog';
 import {
   Wallet,
-  WalletCards,
-  ExternalLink,
   Copy,
   CheckCircle,
   AlertCircle,
   Loader2,
   Zap,
   Shield,
-  QrCode,
-  Settings
+  Plus,
+  ExternalLink
 } from 'lucide-react';
-
-interface WalletInfo {
-  address: string;
-  balance: number; // in sats
-  publicKey: string;
-  isConnected: boolean;
-  provider?: string;
-}
+import { useBSVWallet } from '../../contexts/bsv-wallet-context';
 
 interface WalletConnectionProps {
   connected: boolean;
@@ -43,90 +34,65 @@ interface WalletConnectionProps {
 }
 
 export function WalletConnection({ connected, onConnectionChange, className }: WalletConnectionProps) {
-  const [wallet, setWallet] = useState<WalletInfo | null>(null);
-  const [isConnecting, setIsConnecting] = useState(false);
+  // Use real BSV wallet context
+  const { state: walletState, actions: walletActions } = useBSVWallet();
+
+  // Local UI state
   const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [showSendDialog, setShowSendDialog] = useState(false);
+  const [sendAmount, setSendAmount] = useState('');
+  const [sendAddress, setSendAddress] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const [copiedAddress, setCopiedAddress] = useState(false);
-  const [selectedProvider, setSelectedProvider] = useState<'panda' | 'handcash' | 'simply-cash' | null>(null);
 
-  // Mock wallet providers
-  const walletProviders = [
-    {
-      id: 'panda' as const,
-      name: 'Panda Wallet',
-      icon: '🐼',
-      description: 'Browser extension wallet for BSV'
-    },
-    {
-      id: 'handcash' as const,
-      name: 'HandCash',
-      icon: '💳',
-      description: 'Mobile and web BSV wallet'
-    },
-    {
-      id: 'simply-cash' as const,
-      name: 'Simply Cash',
-      icon: '💰',
-      description: 'Simple BSV wallet solution'
-    }
-  ];
-
-  useEffect(() => {
-    // Check for existing connection on mount
-    const savedWallet = localStorage.getItem('bsv-torrent-wallet');
-    if (savedWallet) {
-      try {
-        const walletData = JSON.parse(savedWallet);
-        setWallet(walletData);
-        onConnectionChange(true);
-      } catch (error) {
-        console.error('Failed to parse saved wallet:', error);
-        localStorage.removeItem('bsv-torrent-wallet');
-      }
-    }
-  }, [onConnectionChange]);
-
-  const connectWallet = async (provider: 'panda' | 'handcash' | 'simply-cash') => {
-    setIsConnecting(true);
-    setError(null);
-    setSelectedProvider(provider);
-
+  const handleConnect = async () => {
     try {
-      // Simulate wallet connection
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // Mock wallet data
-      const mockWallet: WalletInfo = {
-        address: '1A2B3C4D5E6F7890ABCDEF1234567890ABCDEF12',
-        balance: Math.floor(Math.random() * 100000), // Random balance for demo
-        publicKey: '02a1b2c3d4e5f6789012345678901234567890123456789012345678901234567890',
-        isConnected: true,
-        provider: provider
-      };
-
-      setWallet(mockWallet);
-      localStorage.setItem('bsv-torrent-wallet', JSON.stringify(mockWallet));
-      onConnectionChange(true);
-      setShowConnectionDialog(false);
-
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect wallet');
-    } finally {
-      setIsConnecting(false);
-      setSelectedProvider(null);
+      if (!walletState.wallet) {
+        await walletActions.createWallet();
+      } else {
+        await walletActions.connectWallet();
+      }
+    } catch (error) {
+      console.error('Failed to connect wallet:', error);
     }
   };
 
-  const disconnectWallet = () => {
-    setWallet(null);
-    localStorage.removeItem('bsv-torrent-wallet');
-    onConnectionChange(false);
+  const handleDisconnect = async () => {
+    try {
+      await walletActions.disconnectWallet();
+    } catch (error) {
+      console.error('Failed to disconnect wallet:', error);
+    }
+  };
+
+  const handleSendBSV = async () => {
+    if (!sendAddress || !sendAmount) return;
+
+    setIsSending(true);
+    setSendError(null);
+
+    try {
+      const amountSatoshis = Math.floor(parseFloat(sendAmount) * 100000000);
+      const txid = await walletActions.requestTransaction(sendAddress, amountSatoshis);
+
+      console.log('Transaction sent:', txid);
+
+      // Reset form
+      setSendAmount('');
+      setSendAddress('');
+      setShowSendDialog(false);
+
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : 'Transaction failed');
+    } finally {
+      setIsSending(false);
+    }
   };
 
   const copyAddress = async () => {
-    if (wallet?.address) {
-      await navigator.clipboard.writeText(wallet.address);
+    if (walletState.address) {
+      await navigator.clipboard.writeText(walletState.address);
       setCopiedAddress(true);
       setTimeout(() => setCopiedAddress(false), 2000);
     }
@@ -136,195 +102,239 @@ export function WalletConnection({ connected, onConnectionChange, className }: W
     return `${address.slice(0, 6)}...${address.slice(-6)}`;
   };
 
-  const formatBalance = (sats: number): string => {
-    if (sats >= 100000000) {
-      return `${(sats / 100000000).toFixed(4)} BSV`;
+  const getStatusBadge = () => {
+    switch (walletState.connectionStatus) {
+      case 'connected':
+        return <Badge variant="secondary" className="text-green-600"><CheckCircle className="w-3 h-3 mr-1" />Connected</Badge>;
+      case 'connecting':
+        return <Badge variant="outline"><Loader2 className="w-3 h-3 mr-1 animate-spin" />Connecting</Badge>;
+      case 'error':
+        return <Badge variant="destructive"><AlertCircle className="w-3 h-3 mr-1" />Error</Badge>;
+      default:
+        return <Badge variant="outline">Disconnected</Badge>;
     }
-    return `${sats.toLocaleString()} sats`;
   };
 
-  if (connected && wallet) {
+  if (walletState.isConnected && walletState.address) {
     return (
       <div className={`flex items-center gap-2 ${className}`}>
-        <Card className="p-3">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-8 h-8 bg-green-100 rounded-full">
-              <Wallet className="h-4 w-4 text-green-600" />
-            </div>
+        {getStatusBadge()}
 
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">{formatAddress(wallet.address)}</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={copyAddress}
-                  className="h-6 w-6 p-0"
-                >
-                  {copiedAddress ? (
-                    <CheckCircle className="h-3 w-3 text-green-600" />
-                  ) : (
-                    <Copy className="h-3 w-3" />
-                  )}
-                </Button>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">
-                  {formatBalance(wallet.balance)}
-                </span>
-                <Badge variant="secondary" className="text-xs">
-                  {wallet.provider}
-                </Badge>
-              </div>
-            </div>
+        <Dialog>
+          <DialogTrigger asChild>
+            <Button variant="outline" size="sm">
+              <Wallet className="w-4 h-4 mr-2" />
+              {walletState.formattedBalance} BSV
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+              <DialogTitle>BSV Wallet</DialogTitle>
+              <DialogDescription>
+                Manage your Bitcoin SV wallet for BSV Torrent payments
+              </DialogDescription>
+            </DialogHeader>
 
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button variant="outline" size="sm">
-                  <Settings className="h-4 w-4" />
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Wallet Details</DialogTitle>
-                  <DialogDescription>
-                    Manage your BSV wallet connection
-                  </DialogDescription>
-                </DialogHeader>
+            <div className="space-y-4">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm font-medium">Wallet Address</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 text-xs bg-muted p-2 rounded">
+                      {formatAddress(walletState.address)}
+                    </code>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={copyAddress}
+                      className="h-8 w-8"
+                    >
+                      {copiedAddress ? (
+                        <CheckCircle className="h-3 w-3 text-green-600" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
 
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label>Address</Label>
-                    <div className="flex items-center gap-2">
-                      <Input
-                        value={wallet.address}
-                        readOnly
-                        className="font-mono text-sm"
-                      />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={copyAddress}
-                      >
-                        {copiedAddress ? <CheckCircle className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                      </Button>
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm font-medium">Balance</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{walletState.formattedBalance} BSV</div>
+                  <p className="text-sm text-muted-foreground">
+                    {walletState.balance.toLocaleString()} satoshis
+                  </p>
+                </CardContent>
+              </Card>
+
+              <div className="flex gap-2">
+                <Dialog open={showSendDialog} onOpenChange={setShowSendDialog}>
+                  <DialogTrigger asChild>
+                    <Button className="flex-1">
+                      <Zap className="w-4 h-4 mr-2" />
+                      Send BSV
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Send BSV</DialogTitle>
+                      <DialogDescription>
+                        Send Bitcoin SV to another address
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="send-address">Recipient Address</Label>
+                        <Input
+                          id="send-address"
+                          placeholder="1A2B3C4D5E6F7890ABCDEF1234567890ABCDEF12"
+                          value={sendAddress}
+                          onChange={(e) => setSendAddress(e.target.value)}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="send-amount">Amount (BSV)</Label>
+                        <Input
+                          id="send-amount"
+                          type="number"
+                          step="0.00000001"
+                          placeholder="0.001"
+                          value={sendAmount}
+                          onChange={(e) => setSendAmount(e.target.value)}
+                        />
+                      </div>
+
+                      {sendError && (
+                        <div className="flex items-center gap-2 text-sm text-red-600">
+                          <AlertCircle className="w-4 h-4" />
+                          {sendError}
+                        </div>
+                      )}
+
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          className="flex-1"
+                          onClick={() => setShowSendDialog(false)}
+                          disabled={isSending}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          className="flex-1"
+                          onClick={handleSendBSV}
+                          disabled={isSending || !sendAddress || !sendAmount}
+                        >
+                          {isSending ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Sending...
+                            </>
+                          ) : (
+                            'Send BSV'
+                          )}
+                        </Button>
+                      </div>
                     </div>
-                  </div>
+                  </DialogContent>
+                </Dialog>
 
-                  <div className="space-y-2">
-                    <Label>Balance</Label>
-                    <Input
-                      value={formatBalance(wallet.balance)}
-                      readOnly
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Provider</Label>
-                    <Input
-                      value={wallet.provider || 'Unknown'}
-                      readOnly
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                    <Shield className="h-4 w-4 text-yellow-600" />
-                    <span className="text-sm text-yellow-700">
-                      Your private keys are managed by your wallet provider
-                    </span>
-                  </div>
-
-                  <Button
-                    variant="destructive"
-                    onClick={disconnectWallet}
-                    className="w-full"
-                  >
-                    Disconnect Wallet
-                  </Button>
-                </div>
-              </DialogContent>
-            </Dialog>
-          </div>
-        </Card>
+                <Button variant="outline" onClick={handleDisconnect} className="flex-1">
+                  Disconnect
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     );
   }
 
   return (
-    <Dialog open={showConnectionDialog} onOpenChange={setShowConnectionDialog}>
-      <DialogTrigger asChild>
-        <Button variant="outline" className={className}>
-          <Wallet className="h-4 w-4 mr-2" />
-          Connect Wallet
-        </Button>
-      </DialogTrigger>
+    <div className={`flex items-center gap-2 ${className}`}>
+      {getStatusBadge()}
 
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <WalletCards className="h-5 w-5" />
-            Connect BSV Wallet
-          </DialogTitle>
-          <DialogDescription>
-            Choose a BSV wallet to connect and start earning or spending on torrents
-          </DialogDescription>
-        </DialogHeader>
+      <Dialog open={showConnectionDialog} onOpenChange={setShowConnectionDialog}>
+        <DialogTrigger asChild>
+          <Button variant="outline" size="sm">
+            <Plus className="w-4 h-4 mr-2" />
+            Connect Wallet
+          </Button>
+        </DialogTrigger>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Connect BSV Wallet</DialogTitle>
+            <DialogDescription>
+              Create or connect a Bitcoin SV wallet for BSV Torrent payments
+            </DialogDescription>
+          </DialogHeader>
 
-        {error && (
-          <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700">
-            <AlertCircle className="h-4 w-4" />
-            <span className="text-sm">{error}</span>
-          </div>
-        )}
+          <div className="space-y-4">
+            {walletState.error && (
+              <div className="flex items-center gap-2 text-sm text-red-600">
+                <AlertCircle className="w-4 h-4" />
+                {walletState.error}
+              </div>
+            )}
 
-        <div className="space-y-3">
-          {walletProviders.map((provider) => (
-            <Card
-              key={provider.id}
-              className={`cursor-pointer hover:shadow-md transition-shadow ${
-                selectedProvider === provider.id ? 'ring-2 ring-blue-500' : ''
-              }`}
-              onClick={() => !isConnecting && connectWallet(provider.id)}
-            >
-              <CardContent className="p-4">
-                <div className="flex items-center gap-3">
-                  <div className="text-2xl">{provider.icon}</div>
-                  <div className="flex-1">
-                    <h3 className="font-medium">{provider.name}</h3>
-                    <p className="text-sm text-muted-foreground">
-                      {provider.description}
-                    </p>
-                  </div>
-                  {isConnecting && selectedProvider === provider.id ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <ExternalLink className="h-4 w-4 text-muted-foreground" />
-                  )}
-                </div>
+            <Card className="cursor-pointer hover:bg-accent" onClick={handleConnect}>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Shield className="w-4 h-4" />
+                  BSV Torrent Wallet
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground">
+                  {!walletState.wallet
+                    ? 'Create a new BSV wallet for torrent payments'
+                    : 'Connect to your existing BSV wallet'
+                  }
+                </p>
               </CardContent>
             </Card>
-          ))}
-        </div>
 
-        <div className="space-y-3 pt-4 border-t">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Zap className="h-4 w-4" />
-            <span>Lightning-fast micropayments</span>
-          </div>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Shield className="h-4 w-4" />
-            <span>Your keys, your Bitcoin</span>
-          </div>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <QrCode className="h-4 w-4" />
-            <span>Works with all BSV wallets</span>
-          </div>
-        </div>
+            <div className="text-xs text-muted-foreground space-y-1">
+              <p>• Your wallet is stored securely in your browser</p>
+              <p>• Private keys never leave your device</p>
+              <p>• Server wallet handles complex BSV operations</p>
+            </div>
 
-        <p className="text-xs text-muted-foreground text-center">
-          By connecting a wallet, you agree to our Terms of Service and Privacy Policy
-        </p>
-      </DialogContent>
-    </Dialog>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => setShowConnectionDialog(false)}
+                disabled={walletState.isLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="flex-1"
+                onClick={handleConnect}
+                disabled={walletState.isLoading}
+              >
+                {walletState.isLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    {walletState.connectionStatus === 'connecting' ? 'Connecting...' : 'Creating...'}
+                  </>
+                ) : (
+                  !walletState.wallet ? 'Create Wallet' : 'Connect Wallet'
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

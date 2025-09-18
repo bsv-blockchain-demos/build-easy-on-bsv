@@ -16,8 +16,11 @@ import {
   Clock,
   CheckCircle,
   AlertCircle,
-  ExternalLink
+  ExternalLink,
 } from 'lucide-react';
+import { usePaymentMetrics, useBSVTorrentStore } from '../../stores/bsv-torrent-store';
+import { getWebSocketClient } from '../../lib/websocket-client';
+import type { PaymentEvent } from '../../lib/bsv/payment-event-batcher';
 
 interface PaymentTransaction {
   txid: string;
@@ -39,50 +42,42 @@ interface PaymentStatusProps {
 }
 
 export function PaymentStatus({ earnings, spent, connected, className }: PaymentStatusProps) {
-  const [transactions, setTransactions] = useState<PaymentTransaction[]>([]);
+  // Use real payment data from store
+  const paymentMetrics = usePaymentMetrics();
+  const bsvStore = useBSVTorrentStore(state => state);
+
+  // Local UI state
   const [activeTab, setActiveTab] = useState<'overview' | 'payments' | 'earnings'>('overview');
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [wsClient] = useState(() => getWebSocketClient());
 
-  // Mock transaction data
+  // Convert PaymentEvent to PaymentTransaction for display
+  const convertPaymentEvents = (events: PaymentEvent[]): PaymentTransaction[] => {
+    return events.map(event => ({
+      txid: event.txId,
+      type: event.direction === 'sent' ? 'payment' : 'earning',
+      amount: event.amount,
+      status: 'confirmed' as const, // Since these are processed payments
+      torrentName: bsvStore.torrents.get(event.torrentId)?.name || `Torrent ${event.torrentId.substring(0, 8)}`,
+      peerId: event.peerId,
+      timestamp: new Date(event.timestamp),
+      confirmations: 1, // Assume confirmed if in our events
+      blockHeight: undefined // We don't track block height for micropayments
+    }));
+  };
+
+  const recentTransactions = convertPaymentEvents(paymentMetrics.recentPayments);
+
+  // Subscribe to payment events
   useEffect(() => {
     if (connected) {
-      const mockTransactions: PaymentTransaction[] = [
-        {
-          txid: '1a2b3c4d5e6f7890abcdef1234567890abcdef1234567890abcdef1234567890',
-          type: 'payment',
-          amount: 85,
-          status: 'confirmed',
-          torrentName: 'Ubuntu 22.04 Desktop.iso',
-          peerId: 'peer_abc123',
-          timestamp: new Date(Date.now() - 30000),
-          confirmations: 3,
-          blockHeight: 820450
-        },
-        {
-          txid: 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
-          type: 'earning',
-          amount: 34,
-          status: 'confirmed',
-          torrentName: 'React Tutorial Video.mp4',
-          peerId: 'peer_xyz789',
-          timestamp: new Date(Date.now() - 120000),
-          confirmations: 6,
-          blockHeight: 820448
-        },
-        {
-          txid: 'fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321',
-          type: 'payment',
-          amount: 51,
-          status: 'pending',
-          torrentName: 'Node.js Documentation.pdf',
-          peerId: 'peer_def456',
-          timestamp: new Date(Date.now() - 10000),
-          confirmations: 0
-        }
-      ];
-      setTransactions(mockTransactions);
+      wsClient.subscribeToPayments();
+
+      return () => {
+        wsClient.unsubscribeFromPayments();
+      };
     }
-  }, [connected]);
+  }, [connected, wsClient]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -136,8 +131,8 @@ export function PaymentStatus({ earnings, spent, connected, className }: Payment
   };
 
   const netBalance = earnings - spent;
-  const totalTransactions = transactions.length;
-  const pendingTransactions = transactions.filter(tx => tx.status === 'pending').length;
+  const totalTransactions = recentTransactions.length;
+  const pendingTransactions = recentTransactions.filter(tx => tx.status === 'pending').length;
 
   if (!connected) {
     return (
@@ -244,14 +239,14 @@ export function PaymentStatus({ earnings, spent, connected, className }: Payment
                 <CardDescription>Latest payment transactions</CardDescription>
               </CardHeader>
               <CardContent>
-                {transactions.length === 0 ? (
+                {recentTransactions.length === 0 ? (
                   <div className="text-center text-muted-foreground py-8">
                     <Clock className="mx-auto h-8 w-8 mb-2 opacity-50" />
                     <p>No transactions yet</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {transactions.slice(0, 5).map((tx) => (
+                    {recentTransactions.slice(0, 5).map((tx) => (
                       <div key={tx.txid} className="flex items-center justify-between py-2">
                         <div className="flex items-center gap-3">
                           {tx.type === 'earning' ? (
@@ -329,7 +324,7 @@ export function PaymentStatus({ earnings, spent, connected, className }: Payment
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {transactions.filter(tx => tx.type === 'payment').map((tx) => (
+                {recentTransactions.filter(tx => tx.type === 'payment').map((tx) => (
                   <div key={tx.txid} className="flex items-center justify-between p-4 border rounded-lg">
                     <div className="flex items-center gap-4">
                       <div className="flex items-center justify-center w-10 h-10 bg-blue-100 rounded-full">
@@ -369,7 +364,7 @@ export function PaymentStatus({ earnings, spent, connected, className }: Payment
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {transactions.filter(tx => tx.type === 'earning').map((tx) => (
+                {recentTransactions.filter(tx => tx.type === 'earning').map((tx) => (
                   <div key={tx.txid} className="flex items-center justify-between p-4 border rounded-lg">
                     <div className="flex items-center gap-4">
                       <div className="flex items-center justify-center w-10 h-10 bg-green-100 rounded-full">

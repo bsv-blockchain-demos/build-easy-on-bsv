@@ -15,32 +15,112 @@ import {
   Plus,
   Pause,
   Play,
-  Trash2
+  Trash2,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 import { TorrentList } from './torrent-list';
 import { UploadTorrent } from './upload-torrent';
 import { PaymentStatus } from '../payment/payment-status';
 import { WalletConnection } from '../wallet/wallet-connection';
+import { useBSVWallet } from '../../contexts/bsv-wallet-context';
+import {
+  useBSVTorrentStore,
+  useWalletState,
+  usePaymentMetrics,
+  useNetworkStats,
+  useTorrents,
+  useActiveTorrents,
+  useTotalStats,
+  useConnectionStatus
+} from '../../stores/bsv-torrent-store';
+import { getWebSocketClient } from '../../lib/websocket-client';
 
 interface TorrentDashboardProps {
   className?: string;
 }
 
 export function TorrentDashboard({ className }: TorrentDashboardProps) {
-  const [activeTorrents, setActiveTorrents] = useState([]);
-  const [walletConnected, setWalletConnected] = useState(false);
-  const [totalEarnings, setTotalEarnings] = useState(0);
-  const [totalSpent, setTotalSpent] = useState(0);
-  const [activeTab, setActiveTab] = useState('dashboard');
+  // BSV Wallet integration
+  const { state: walletState } = useBSVWallet();
 
-  // Mock data for demonstration
+  // Zustand store integration
+  const connectionStatus = useConnectionStatus();
+  const paymentMetrics = usePaymentMetrics();
+  const networkStats = useNetworkStats();
+  const torrents = useTorrents();
+  const activeTorrents = useActiveTorrents();
+  const totalStats = useTotalStats();
+
+  // Local UI state
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [wsClient] = useState(() => getWebSocketClient());
+
+  // Initialize WebSocket subscriptions
+  useEffect(() => {
+    wsClient.subscribeToWallet();
+    wsClient.subscribeToPayments();
+
+    return () => {
+      wsClient.unsubscribeFromWallet();
+      wsClient.unsubscribeFromPayments();
+    };
+  }, [wsClient]);
+
+  // Calculate real dashboard stats
+  const downloadingTorrents = torrents.filter(t => t.status === 'downloading');
+  const seedingTorrents = torrents.filter(t => t.status === 'seeding');
+
   const dashboardStats = {
-    activeDownloads: 3,
-    activeUploads: 2,
-    totalEarned: totalEarnings,
-    totalSpent: totalSpent,
-    networkSpeed: '1.2 MB/s',
-    peersConnected: 15
+    activeDownloads: downloadingTorrents.length,
+    activeUploads: seedingTorrents.length,
+    totalEarned: totalStats.totalEarnings,
+    totalSpent: totalStats.totalSpent,
+    networkSpeed: `${(networkStats.totalDownloadSpeed / 1024 / 1024).toFixed(1)} MB/s`,
+    peersConnected: networkStats.peersConnected
+  };
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+  };
+
+  const getConnectionStatusBadge = () => {
+    const isWalletConnected = walletState.isConnected;
+    const isWebSocketConnected = wsClient.isConnected();
+
+    if (isWalletConnected && isWebSocketConnected) {
+      return <Badge variant="secondary" className="text-green-600"><Wifi className="w-3 h-3 mr-1" />Connected</Badge>;
+    } else if (isWalletConnected || isWebSocketConnected) {
+      return <Badge variant="outline" className="text-yellow-600"><Wifi className="w-3 h-3 mr-1" />Partial</Badge>;
+    } else {
+      return <Badge variant="destructive"><WifiOff className="w-3 h-3 mr-1" />Disconnected</Badge>;
+    }
+  };
+
+  // Convert TorrentFile to TorrentInfo for TorrentList component compatibility
+  const convertToTorrentInfo = (torrentFiles: any[]) => {
+    return torrentFiles.map(torrent => ({
+      infoHash: torrent.infoHash,
+      name: torrent.name,
+      size: torrent.size,
+      progress: torrent.progress,
+      downloadSpeed: torrent.downloadSpeed,
+      uploadSpeed: torrent.uploadSpeed,
+      peers: torrent.peers?.length || 0,
+      seeders: Math.floor(torrent.peers?.filter((p: any) => p.overlay).length * 0.7) || 0, // Estimate
+      leechers: Math.floor(torrent.peers?.filter((p: any) => !p.overlay).length * 0.3) || 0, // Estimate
+      status: torrent.status,
+      timeRemaining: torrent.status === 'downloading' && torrent.downloadSpeed > 0
+        ? ((torrent.size * (1 - torrent.progress)) / torrent.downloadSpeed)
+        : undefined,
+      totalEarned: torrent.totalEarned,
+      totalSpent: torrent.totalPaid,
+      dateAdded: torrent.dateAdded
+    }));
   };
 
   return (
@@ -54,9 +134,18 @@ export function TorrentDashboard({ className }: TorrentDashboardProps) {
           </p>
         </div>
         <div className="flex items-center gap-4">
+          {getConnectionStatusBadge()}
+          <div className="text-right">
+            <div className="text-sm font-medium">
+              {walletState.formattedBalance} BSV
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {walletState.address ? `${walletState.address.slice(0, 8)}...` : 'No wallet'}
+            </div>
+          </div>
           <WalletConnection
-            connected={walletConnected}
-            onConnectionChange={setWalletConnected}
+            connected={walletState.isConnected}
+            onConnectionChange={() => {}} // This will be handled by the context
           />
           <Button variant="outline" size="icon">
             <Settings className="h-4 w-4" />
@@ -87,7 +176,7 @@ export function TorrentDashboard({ className }: TorrentDashboardProps) {
           <CardContent>
             <div className="text-2xl font-bold">{dashboardStats.activeUploads}</div>
             <p className="text-xs text-muted-foreground">
-              Earning {totalEarnings} sats
+              Earning {dashboardStats.totalEarned.toLocaleString()} sats
             </p>
           </CardContent>
         </Card>
@@ -156,7 +245,7 @@ export function TorrentDashboard({ className }: TorrentDashboardProps) {
               </CardHeader>
               <CardContent>
                 <TorrentList
-                  torrents={activeTorrents}
+                  torrents={convertToTorrentInfo(activeTorrents)}
                   type="recent"
                   maxItems={5}
                 />
@@ -208,7 +297,7 @@ export function TorrentDashboard({ className }: TorrentDashboardProps) {
             </Button>
           </div>
           <TorrentList
-            torrents={activeTorrents}
+            torrents={convertToTorrentInfo(downloadingTorrents)}
             type="downloads"
             showPayments={true}
           />
@@ -218,12 +307,12 @@ export function TorrentDashboard({ className }: TorrentDashboardProps) {
           <div className="flex justify-between items-center">
             <h2 className="text-2xl font-semibold">Uploads & Seeding</h2>
             <UploadTorrent
-              onUpload={(file) => console.log('Upload:', file)}
-              connected={walletConnected}
+              onUpload={async (file) => console.log('Upload:', file)}
+              connected={walletState.isConnected}
             />
           </div>
           <TorrentList
-            torrents={activeTorrents}
+            torrents={convertToTorrentInfo(seedingTorrents)}
             type="uploads"
             showEarnings={true}
           />
@@ -234,17 +323,17 @@ export function TorrentDashboard({ className }: TorrentDashboardProps) {
             <h2 className="text-2xl font-semibold">Payment History</h2>
             <div className="flex items-center gap-2">
               <Badge variant="outline" className="text-green-600">
-                +{totalEarnings} sats earned
+                +{dashboardStats.totalEarned.toLocaleString()} sats earned
               </Badge>
               <Badge variant="outline" className="text-blue-600">
-                -{totalSpent} sats spent
+                -{dashboardStats.totalSpent.toLocaleString()} sats spent
               </Badge>
             </div>
           </div>
           <PaymentStatus
-            earnings={totalEarnings}
-            spent={totalSpent}
-            connected={walletConnected}
+            earnings={dashboardStats.totalEarned}
+            spent={dashboardStats.totalSpent}
+            connected={walletState.isConnected}
           />
         </TabsContent>
       </Tabs>
