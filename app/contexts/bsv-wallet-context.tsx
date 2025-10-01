@@ -1,31 +1,25 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { SetupClient } from '@bsv/wallet-toolbox/client';
-import { StorageIdb } from '@bsv/wallet-toolbox/client';
-import { PrivateKey } from '@bsv/sdk';
-import type { SetupWallet } from '@bsv/wallet-toolbox/client';
+import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
+import { WalletClient } from '@bsv/sdk';
 
 export interface BSVWalletState {
-  setupWallet: SetupWallet | null;
+  walletClient: WalletClient | null;
   isConnected: boolean;
   isLoading: boolean;
   address: string | null;
-  balance: number;
-  formattedBalance: string;
+  publicKey: string | null;
   error: string | null;
   connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'error';
-  identityKey: string | null;
-  rootKey: string | null;
+  isAuthenticated: boolean;
 }
 
 export interface BSVWalletActions {
-  createWallet: () => Promise<void>;
   connectWallet: () => Promise<void>;
   disconnectWallet: () => Promise<void>;
-  refreshBalance: () => Promise<void>;
-  createTransaction: (recipient: string, amountSatoshis: number) => Promise<string>;
+  sendToServerWallet: (amountSatoshis: number, purpose: string) => Promise<string>;
   clearError: () => void;
+  refreshConnection: () => Promise<void>;
 }
 
 export interface BSVWalletContextType {
@@ -41,126 +35,85 @@ interface BSVWalletProviderProps {
 
 export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
   const [state, setState] = useState<BSVWalletState>({
-    setupWallet: null,
+    walletClient: null,
     isConnected: false,
     isLoading: true,
     address: null,
-    balance: 0,
-    formattedBalance: '0.00000000',
+    publicKey: null,
     error: null,
     connectionStatus: 'disconnected',
-    identityKey: null,
-    rootKey: null,
+    isAuthenticated: false,
   });
 
-  const formatSatoshisToBSV = (satoshis: number): string => {
-    return (satoshis / 100000000).toFixed(8);
-  };
-
   const updateState = (updates: Partial<BSVWalletState>) => {
-    setState(prev => {
-      const newState = { ...prev, ...updates };
-
-      // Auto-format balance when it changes
-      if ('balance' in updates && updates.balance !== undefined) {
-        newState.formattedBalance = formatSatoshisToBSV(updates.balance);
-      }
-
-      return newState;
-    });
+    setState(prev => ({ ...prev, ...updates }));
   };
 
-  const createWallet = async (): Promise<void> => {
+  /**
+   * Connect to user's BRC-100 compliant wallet (browser extension, mobile app, etc.)
+   * This follows the CommonSourceOnboarding pattern for client-side wallet connection
+   */
+  const connectWallet = useCallback(async (): Promise<void> => {
     try {
       updateState({ isLoading: true, error: null, connectionStatus: 'connecting' });
 
-      // Generate random root key using BSV SDK
-      const rootKeyHex = PrivateKey.fromRandom().toString();
+      // Try different substrates in order of preference (like CommonSourceOnboarding)
+      const substrates = [
+        { name: 'auto', config: 'auto' },
+        { name: 'window.CWI', config: 'window.CWI' },
+        { name: 'cicada', config: 'cicada' },
+        { name: 'json-api', config: 'json-api' }
+      ];
 
-      // Create BRC-100 compliant wallet
-      const setupWallet = await SetupClient.createWallet({
-        chain: process.env.NEXT_PUBLIC_BSV_NETWORK === 'mainnet' ? 'main' : 'test',
-        rootKeyHex,
-        active: true,
-        backups: {
-          storage: new StorageIdb('BSVTorrentWallet')
+      let walletClient = null;
+      let lastError = null;
+      const errors = [];
+
+      for (const substrate of substrates) {
+        try {
+          console.log(`[BSVWallet] Trying substrate: ${substrate.name}`);
+          walletClient = new WalletClient(substrate.config, 'localhost');
+
+          // Force connection to substrate
+          await walletClient.connectToSubstrate();
+          console.log(`[BSVWallet] Connected to substrate: ${substrate.name}`);
+
+          // Test authentication
+          const isAuthenticated = await walletClient.isAuthenticated();
+          console.log(`[BSVWallet] Authentication result: ${isAuthenticated}`);
+
+          if (isAuthenticated) {
+            // Get public key to verify full functionality
+            const { publicKey } = await walletClient.getPublicKey({ identityKey: true });
+            console.log(`[BSVWallet] Got public key: ${publicKey?.substring(0, 16)}...`);
+
+            updateState({
+              walletClient,
+              isConnected: true,
+              isLoading: false,
+              publicKey,
+              address: publicKey, // For display purposes
+              connectionStatus: 'connected',
+              isAuthenticated: true,
+            });
+
+            console.log(`[BSVWallet] Successfully connected with substrate: ${substrate.name}`);
+            return;
+          } else {
+            console.warn(`[BSVWallet] Substrate ${substrate.name} connected but not authenticated`);
+            errors.push(`${substrate.name}: Connected but not authenticated`);
+          }
+        } catch (error) {
+          console.error(`[BSVWallet] Substrate ${substrate.name} failed:`, error instanceof Error ? error.message : error);
+          errors.push(`${substrate.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          lastError = error;
+          continue;
         }
-      });
-
-      // Get identity key and first receiving address
-      const identityKey = setupWallet.identityKey;
-      const outputs = await setupWallet.listOutputs();
-      const firstAddress = outputs.length > 0 ? outputs[0].spendingDescription?.identityKey || null : null;
-
-      // Save wallet configuration to localStorage for persistence
-      localStorage.setItem('bsv-torrent-wallet-config', JSON.stringify({
-        rootKeyHex,
-        chain: process.env.NEXT_PUBLIC_BSV_NETWORK === 'mainnet' ? 'main' : 'test',
-        identityKey
-      }));
-
-      updateState({
-        setupWallet,
-        isConnected: true,
-        isLoading: false,
-        address: firstAddress,
-        connectionStatus: 'connected',
-        identityKey,
-        rootKey: rootKeyHex,
-      });
-
-      // Calculate initial balance
-      await refreshBalance();
-
-    } catch (error) {
-      console.error('Failed to create wallet:', error);
-      updateState({
-        isLoading: false,
-        error: error instanceof Error ? error.message : 'Failed to create wallet',
-        connectionStatus: 'error',
-      });
-    }
-  };
-
-  const connectWallet = async (): Promise<void> => {
-    try {
-      updateState({ isLoading: true, error: null, connectionStatus: 'connecting' });
-
-      // Try to load existing wallet configuration
-      const savedConfig = localStorage.getItem('bsv-torrent-wallet-config');
-
-      if (!savedConfig) {
-        throw new Error('No existing wallet found. Please create a new wallet.');
       }
 
-      const config = JSON.parse(savedConfig);
-
-      // Recreate wallet from saved configuration
-      const setupWallet = await SetupClient.createWallet({
-        chain: config.chain,
-        rootKeyHex: config.rootKeyHex,
-        active: true,
-        backups: {
-          storage: new StorageIdb('BSVTorrentWallet')
-        }
-      });
-
-      // Get receiving address from outputs
-      const outputs = await setupWallet.listOutputs();
-      const firstAddress = outputs.length > 0 ? outputs[0].spendingDescription?.identityKey || null : null;
-
-      updateState({
-        setupWallet,
-        isConnected: true,
-        isLoading: false,
-        address: firstAddress,
-        connectionStatus: 'connected',
-        identityKey: config.identityKey,
-        rootKey: config.rootKeyHex,
-      });
-
-      // Calculate balance
-      await refreshBalance();
+      // If we get here, all substrates failed
+      console.error('[BSVWallet] All substrate attempts failed:', errors);
+      throw new Error(`Failed to connect to any wallet substrate. Last error: ${lastError instanceof Error ? lastError.message : 'Unknown error'}`);
 
     } catch (error) {
       console.error('Failed to connect wallet:', error);
@@ -170,21 +123,22 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
         connectionStatus: 'error',
       });
     }
-  };
+  }, []); // Empty deps - updateState is stable
 
-  const disconnectWallet = async (): Promise<void> => {
+  /**
+   * Disconnect from user's wallet
+   */
+  const disconnectWallet = useCallback(async (): Promise<void> => {
     try {
       updateState({
-        setupWallet: null,
+        walletClient: null,
         isConnected: false,
         isLoading: false,
         address: null,
-        balance: 0,
-        formattedBalance: '0.00000000',
+        publicKey: null,
         error: null,
         connectionStatus: 'disconnected',
-        identityKey: null,
-        rootKey: null,
+        isAuthenticated: false,
       });
     } catch (error) {
       console.error('Failed to disconnect wallet:', error);
@@ -192,78 +146,107 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
         error: error instanceof Error ? error.message : 'Failed to disconnect wallet',
       });
     }
-  };
+  }, []);
 
-  const refreshBalance = async (): Promise<void> => {
-    if (!state.setupWallet) return;
-
-    try {
-      // Get spendable outputs and calculate balance
-      const outputs = await state.setupWallet.listOutputs();
-      const spendableOutputs = outputs.filter(output =>
-        output.spendable && !output.spent && output.satoshis > 0
-      );
-
-      const totalBalance = spendableOutputs.reduce((sum, output) => sum + output.satoshis, 0);
-
-      updateState({ balance: totalBalance });
-
-    } catch (error) {
-      console.error('Failed to refresh balance:', error);
-      updateState({
-        error: error instanceof Error ? error.message : 'Failed to refresh balance',
-      });
-    }
-  };
-
-  const createTransaction = async (recipient: string, amountSatoshis: number): Promise<string> => {
-    if (!state.setupWallet || !state.isConnected) {
+  /**
+   * Send payment from user's wallet to the server wallet
+   * This uses the user's BRC-100 wallet to send funds to the app wallet
+   */
+  const sendToServerWallet = useCallback(async (amountSatoshis: number, purpose: string): Promise<string> => {
+    if (!state.walletClient || !state.isConnected) {
       throw new Error('Wallet not connected');
     }
 
     try {
-      // Create BRC-100 compliant action
-      const action = await state.setupWallet.createAction({
-        description: `BSV Torrent Payment: ${amountSatoshis} satoshis`,
+      // First, get a payment request from the server wallet
+      const response = await fetch('/api/wallet/payment-request', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          amountSatoshis,
+          purpose,
+          description: `BSV Torrent ${purpose} funding`
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to create payment request');
+      }
+
+      const { data: paymentRequest } = await response.json();
+
+      // Create BRC-100 compliant action using user's wallet
+      const action = await state.walletClient.createAction({
+        description: `BSV Torrent Payment: ${amountSatoshis} satoshis to app wallet`,
         outputs: [{
-          script: recipient, // Should be a valid locking script
+          script: paymentRequest.paymentAddress, // Server wallet address
           satoshis: amountSatoshis,
-          description: 'BSV Torrent payment'
+          description: `BSV Torrent ${purpose} payment`
         }]
       });
 
-      // The action should contain the signed transaction
       const txid = action.txid;
 
       if (!txid) {
         throw new Error('Transaction creation failed - no txid returned');
       }
 
-      // Refresh balance after transaction
-      setTimeout(() => refreshBalance(), 1000);
-
+      console.log(`[BSVWallet] Payment sent to server wallet: ${txid}`);
       return txid;
 
     } catch (error) {
-      console.error('Failed to create transaction:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Transaction failed';
+      console.error('Failed to send payment to server wallet:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Payment failed';
       updateState({ error: errorMessage });
       throw new Error(errorMessage);
     }
-  };
+  }, [state.walletClient, state.isConnected]); // Depends on wallet state
 
-  const clearError = (): void => {
+  /**
+   * Refresh wallet connection status
+   */
+  const refreshConnection = useCallback(async (): Promise<void> => {
+    if (!state.walletClient) {
+      return;
+    }
+
+    try {
+      const isAuthenticated = await state.walletClient.isAuthenticated();
+
+      updateState({
+        isAuthenticated,
+        isConnected: isAuthenticated,
+        connectionStatus: isAuthenticated ? 'connected' : 'disconnected'
+      });
+
+    } catch (error) {
+      console.error('Failed to refresh connection:', error);
+      updateState({
+        isAuthenticated: false,
+        isConnected: false,
+        connectionStatus: 'error',
+        error: error instanceof Error ? error.message : 'Connection refresh failed',
+      });
+    }
+  }, [state.walletClient]); // Depends on wallet client
+
+  /**
+   * Clear error state
+   */
+  const clearError = useCallback((): void => {
     updateState({ error: null });
-  };
+  }, []);
 
   // Initialize wallet on mount
   useEffect(() => {
     const initializeWallet = async () => {
       try {
-        // Try to connect to existing wallet first
+        // Try to connect to user's wallet
         await connectWallet();
       } catch (error) {
-        // If no existing wallet, set to disconnected state
+        // If connection fails, set to disconnected state
         updateState({
           isLoading: false,
           connectionStatus: 'disconnected'
@@ -272,23 +255,22 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
     };
 
     initializeWallet();
-  }, []);
+  }, [connectWallet]); // Include connectWallet dependency
 
-  // Set up periodic balance refresh when connected
+  // Set up periodic connection refresh when connected
   useEffect(() => {
-    if (state.isConnected && state.setupWallet) {
-      const interval = setInterval(refreshBalance, 30000); // Refresh every 30 seconds
+    if (state.isConnected && state.walletClient) {
+      const interval = setInterval(refreshConnection, 30000); // Refresh every 30 seconds
       return () => clearInterval(interval);
     }
-  }, [state.isConnected, state.setupWallet]);
+  }, [state.isConnected, state.walletClient, refreshConnection]); // Include all dependencies
 
   const actions: BSVWalletActions = {
-    createWallet,
     connectWallet,
     disconnectWallet,
-    refreshBalance,
-    createTransaction,
+    sendToServerWallet,
     clearError,
+    refreshConnection,
   };
 
   const contextValue: BSVWalletContextType = {
@@ -312,14 +294,6 @@ export function useBSVWallet() {
 }
 
 // Convenience hooks for specific wallet state
-export function useWalletBalance() {
-  const { state } = useBSVWallet();
-  return {
-    balance: state.balance,
-    formattedBalance: state.formattedBalance,
-  };
-}
-
 export function useWalletConnection() {
   const { state, actions } = useBSVWallet();
   return {
@@ -327,12 +301,13 @@ export function useWalletConnection() {
     isLoading: state.isLoading,
     connectionStatus: state.connectionStatus,
     address: state.address,
+    publicKey: state.publicKey,
     error: state.error,
-    identityKey: state.identityKey,
-    rootKey: state.rootKey,
+    isAuthenticated: state.isAuthenticated,
     connect: actions.connectWallet,
     disconnect: actions.disconnectWallet,
-    create: actions.createWallet,
+    sendToServerWallet: actions.sendToServerWallet,
     clearError: actions.clearError,
+    refreshConnection: actions.refreshConnection,
   };
 }

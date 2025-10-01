@@ -14,7 +14,7 @@
   "dependencies": {
     "@bsv/overlay": "^0.4.6",
     "@bsv/sdk": "^1.7.6",
-    "@bsv/wallet-toolbox": "^1.6.23",
+    "@bsv/wallet-toolbox-client": "^1.6.23",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-label": "^2.1.7",
     "@radix-ui/react-progress": "^1.1.7",

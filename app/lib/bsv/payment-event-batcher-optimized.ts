@@ -11,6 +11,11 @@ export interface PaymentEvent {
   chunkSize: number;
 }
 
+// Internal type with processing metadata
+interface PaymentEventWithMetadata extends PaymentEvent {
+  _processingStartTime: number;
+}
+
 export interface BatchMetrics {
   count: number;
   totalAmount: number;
@@ -21,10 +26,15 @@ export interface BatchMetrics {
   throughput: number; // events per second
 }
 
+// Extended metrics with flush reason
+interface BatchMetricsExtended extends BatchMetrics {
+  flushReason: 'overflow' | 'size' | 'timeout';
+}
+
 export interface PaymentBatch {
   batchKey: string;
   events: PaymentEvent[];
-  metrics: BatchMetrics;
+  metrics: BatchMetricsExtended;
   timestamp: number;
 }
 
@@ -50,7 +60,7 @@ export interface OptimizedBatcherConfig {
 }
 
 export class OptimizedPaymentEventBatcher extends EventEmitter {
-  private batches = new Map<string, PaymentEvent[]>();
+  private batches = new Map<string, PaymentEventWithMetadata[]>();
   private batchTimers = new Map<string, NodeJS.Timeout>();
   private recentBatches: PaymentBatch[] = [];
 
@@ -111,12 +121,12 @@ export class OptimizedPaymentEventBatcher extends EventEmitter {
     }
 
     // Add processing timestamp for latency tracking
-    const enhancedEvent = {
+    const enhancedEvent: PaymentEventWithMetadata = {
       ...event,
       _processingStartTime: eventStartTime
     };
 
-    batch.push(enhancedEvent as any);
+    batch.push(enhancedEvent);
     this.totalEventsProcessed++;
 
     // Adaptive batch size check
@@ -149,11 +159,9 @@ export class OptimizedPaymentEventBatcher extends EventEmitter {
     }
 
     // Calculate latencies for optimization
-    batch.forEach((event: any) => {
-      if (event._processingStartTime) {
-        const latency = flushTime - event._processingStartTime;
-        this.recentLatencies.push(latency);
-      }
+    batch.forEach((event) => {
+      const latency = flushTime - event._processingStartTime;
+      this.recentLatencies.push(latency);
     });
 
     // Limit latency tracking array size
@@ -161,8 +169,8 @@ export class OptimizedPaymentEventBatcher extends EventEmitter {
       this.recentLatencies = this.recentLatencies.slice(-500);
     }
 
-    // Clean events before processing
-    const cleanEvents: PaymentEvent[] = batch.map((event: any) => {
+    // Clean events before processing (remove internal metadata)
+    const cleanEvents: PaymentEvent[] = batch.map((event) => {
       const { _processingStartTime, ...cleanEvent } = event;
       return cleanEvent;
     });
@@ -177,7 +185,7 @@ export class OptimizedPaymentEventBatcher extends EventEmitter {
       metrics: {
         ...aggregatedMetrics,
         flushReason: forced ? 'overflow' : (cleanEvents.length >= this.currentBatchSize ? 'size' : 'timeout')
-      } as any,
+      },
       timestamp: flushTime
     };
 
@@ -419,11 +427,29 @@ export class OptimizedPaymentEventBatcher extends EventEmitter {
       Math.min(this.config.maxBatchTimeout, this.currentBatchTimeout)
     );
 
+    // Restart active batch timers with new timeout values
+    for (const [batchKey, timer] of this.batchTimers.entries()) {
+      clearTimeout(timer);
+      const newTimer = setTimeout(() => {
+        this.flushBatch(batchKey);
+      }, this.currentBatchTimeout);
+      this.batchTimers.set(batchKey, newTimer);
+    }
+
+    // Restart tuning timer if interval changed
+    if (newConfig.tuningIntervalMs !== undefined && this.tuningTimer) {
+      clearInterval(this.tuningTimer);
+      this.tuningTimer = setInterval(() => {
+        this.performAdvancedTuning();
+      }, this.config.tuningIntervalMs);
+    }
+
     this.emit('config:updated', {
       oldConfig,
       newConfig: this.config,
       adjustedBatchSize: this.currentBatchSize,
       adjustedBatchTimeout: this.currentBatchTimeout,
+      activeTimersRestarted: this.batchTimers.size,
       timestamp: Date.now()
     });
   }
