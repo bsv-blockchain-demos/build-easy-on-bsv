@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { TorrentWalletManager } from '../../../../bsv-torrent/lib/wallet/torrent-wallet-manager';
+import { ensureServerInitialized } from '../../../lib/ensure-initialized';
 
 interface TransactionRequest {
   recipient: string;
@@ -9,6 +10,9 @@ interface TransactionRequest {
 
 export async function POST(request: NextRequest) {
   try {
+    // Ensure server is initialized before processing transaction
+    await ensureServerInitialized();
+
     // Get authorization header
     const authHeader = request.headers.get('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {

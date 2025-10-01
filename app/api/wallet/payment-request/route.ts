@@ -7,6 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppWallet } from '../../../../lib/server/torrent-app-wallet-service';
+import { ensureServerInitialized } from '../../../lib/ensure-initialized';
 
 interface PaymentRequestBody {
   amountSatoshis: number;
@@ -16,6 +17,9 @@ interface PaymentRequestBody {
 
 export async function POST(request: NextRequest) {
   try {
+    // Ensure server is initialized before accessing wallet
+    await ensureServerInitialized();
+
     const body: PaymentRequestBody = await request.json();
 
     // Validate request

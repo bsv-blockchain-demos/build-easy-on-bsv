@@ -3,46 +3,25 @@
  *
  * POST /api/wallet/initialize
  * Initializes the server-side BSV Torrent application wallet
+ *
+ * Note: This is now primarily for manual initialization.
+ * The server auto-initializes on first API request via ensureServerInitialized()
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { initializeAppWallet } from '../../../../lib/server/torrent-app-wallet-service';
+import { ensureServerInitialized } from '../../../lib/ensure-initialized';
+import { getAppWallet } from '../../../../lib/server/torrent-app-wallet-service';
 
 export async function POST(request: NextRequest) {
   try {
-    // Validate environment variables
-    const privateKeyHex = process.env.SERVER_PRIVATE_KEY;
-    const walletStorageUrl = process.env.WALLET_STORAGE_URL;
-    const chain = process.env.NEXT_PUBLIC_BSV_NETWORK === 'mainnet' ? 'main' : 'test';
-
-    if (!privateKeyHex) {
-      return NextResponse.json({
-        success: false,
-        error: 'SERVER_PRIVATE_KEY environment variable not configured'
-      }, { status: 500 });
-    }
-
-    if (!walletStorageUrl) {
-      return NextResponse.json({
-        success: false,
-        error: 'WALLET_STORAGE_URL environment variable not configured'
-      }, { status: 500 });
-    }
-
-    // Initialize the app wallet service
-    const appWallet = initializeAppWallet({
-      privateKeyHex,
-      walletStorageUrl,
-      chain,
-      enableLogging: true
-    });
-
-    // Initialize the wallet
-    await appWallet.initialize();
+    // Initialize server (idempotent - safe to call multiple times)
+    await ensureServerInitialized();
 
     // Get wallet info for confirmation
+    const appWallet = getAppWallet();
     const publicKey = await appWallet.getPublicKey();
     const balance = await appWallet.getBalance();
+    const chain = process.env.NEXT_PUBLIC_BSV_NETWORK || 'test';
 
     return NextResponse.json({
       success: true,

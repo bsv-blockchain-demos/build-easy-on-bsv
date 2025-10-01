@@ -7,9 +7,13 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppWallet } from '../../../../lib/server/torrent-app-wallet-service';
+import { ensureServerInitialized } from '../../../lib/ensure-initialized';
 
 export async function GET(request: NextRequest) {
   try {
+    // Ensure server is initialized before accessing wallet
+    await ensureServerInitialized();
+
     // Get the singleton app wallet instance
     const appWallet = getAppWallet();
 

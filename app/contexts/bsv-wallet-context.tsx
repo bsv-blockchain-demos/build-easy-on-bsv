@@ -5,10 +5,13 @@ import { WalletClient } from '@bsv/sdk';
 
 export interface BSVWalletState {
   walletClient: WalletClient | null;
+  wallet: WalletClient | null; // Alias for compatibility
   isConnected: boolean;
   isLoading: boolean;
   address: string | null;
   publicKey: string | null;
+  balance: number;
+  formattedBalance: string;
   error: string | null;
   connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'error';
   isAuthenticated: boolean;
@@ -36,10 +39,13 @@ interface BSVWalletProviderProps {
 export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
   const [state, setState] = useState<BSVWalletState>({
     walletClient: null,
+    wallet: null,
     isConnected: false,
     isLoading: true,
     address: null,
     publicKey: null,
+    balance: 0,
+    formattedBalance: '0.00000000',
     error: null,
     connectionStatus: 'disconnected',
     isAuthenticated: false,
@@ -59,10 +65,10 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
 
       // Try different substrates in order of preference (like CommonSourceOnboarding)
       const substrates = [
-        { name: 'auto', config: 'auto' },
-        { name: 'window.CWI', config: 'window.CWI' },
-        { name: 'cicada', config: 'cicada' },
-        { name: 'json-api', config: 'json-api' }
+        { name: 'auto', config: 'auto' as const },
+        { name: 'window.CWI', config: 'window.CWI' as const },
+        { name: 'Cicada', config: 'Cicada' as const },
+        { name: 'json-api', config: 'json-api' as const }
       ];
 
       let walletClient = null;
@@ -79,7 +85,8 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
           console.log(`[BSVWallet] Connected to substrate: ${substrate.name}`);
 
           // Test authentication
-          const isAuthenticated = await walletClient.isAuthenticated();
+          const authResult = await walletClient.isAuthenticated();
+          const isAuthenticated = authResult.authenticated;
           console.log(`[BSVWallet] Authentication result: ${isAuthenticated}`);
 
           if (isAuthenticated) {
@@ -89,6 +96,7 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
 
             updateState({
               walletClient,
+              wallet: walletClient,
               isConnected: true,
               isLoading: false,
               publicKey,
@@ -132,10 +140,13 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
     try {
       updateState({
         walletClient: null,
+        wallet: null,
         isConnected: false,
         isLoading: false,
         address: null,
         publicKey: null,
+        balance: 0,
+        formattedBalance: '0.00000000',
         error: null,
         connectionStatus: 'disconnected',
         isAuthenticated: false,
@@ -181,9 +192,9 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
       const action = await state.walletClient.createAction({
         description: `BSV Torrent Payment: ${amountSatoshis} satoshis to app wallet`,
         outputs: [{
-          script: paymentRequest.paymentAddress, // Server wallet address
+          lockingScript: paymentRequest.paymentAddress, // Server wallet address
           satoshis: amountSatoshis,
-          description: `BSV Torrent ${purpose} payment`
+          outputDescription: `BSV Torrent ${purpose} payment`
         }]
       });
 
@@ -213,7 +224,8 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
     }
 
     try {
-      const isAuthenticated = await state.walletClient.isAuthenticated();
+      const authResult = await state.walletClient.isAuthenticated();
+      const isAuthenticated = authResult.authenticated;
 
       updateState({
         isAuthenticated,
