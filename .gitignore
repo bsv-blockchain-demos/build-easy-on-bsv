@@ -42,3 +42,7 @@ next-env.d.ts
 
 # claude
 .claude
+
+# test scripts
+test-*.js
+test-*.ts

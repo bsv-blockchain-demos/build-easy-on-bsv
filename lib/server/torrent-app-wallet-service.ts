@@ -56,6 +56,21 @@ export interface WalletTransaction {
   status: 'pending' | 'confirmed' | 'failed';
 }
 
+export interface WithdrawalLimits {
+  perTransaction: number;  // Maximum satoshis per withdrawal
+  daily: number;           // Maximum satoshis per 24-hour period
+}
+
+export interface AuditLogEntry {
+  timestamp: Date;
+  operation: 'deposit' | 'withdrawal' | 'micropayment' | 'seeder_payment';
+  amount: number;
+  txid: string;
+  userIdentifier?: string;
+  purpose: string;
+  status: 'pending' | 'completed' | 'failed';
+}
+
 /**
  * Server-side wallet service for BSV Torrent application
  *
@@ -67,6 +82,15 @@ export class TorrentAppWalletService {
   private config: TorrentAppWalletConfig;
   private isInitialized = false;
   private initializationPromise: Promise<void> | null = null;
+
+  // Security limits for withdrawals
+  private withdrawalLimits: WithdrawalLimits = {
+    perTransaction: 100000,  // 100k sats = 0.001 BSV
+    daily: 1000000,          // 1M sats = 0.01 BSV
+  };
+
+  // Track daily withdrawals for limit enforcement
+  private dailyWithdrawals: Map<string, { date: string; total: number }> = new Map();
 
   constructor(config: TorrentAppWalletConfig) {
     this.config = config;
@@ -180,23 +204,74 @@ export class TorrentAppWalletService {
 
   /**
    * Get wallet balance information
+   *
+   * IMPORTANT: listOutputs() defaults to limit=10, so we must specify a higher limit
+   * to get all UTXOs. Maximum allowed is 10,000 per call.
    */
   async getBalance(): Promise<WalletBalance> {
     const wallet = await this.getWallet();
 
     try {
-      // Get all outputs to calculate balance
-      const outputs = await wallet.listOutputs();
+      console.log('[TorrentAppWallet] ========== Balance Calculation Start ==========');
 
-      const spendableOutputs = outputs.filter(output =>
-        output.spendable && !output.spent && output.satoshis > 0
+      // Query all outputs with maximum limit to ensure we get everything
+      // listOutputs() returns { totalOutputs, outputs, BEEF? } - NOT a direct array
+      // DEFAULT LIMIT IS 10 - We must specify higher limit to get all outputs!
+      const result = await wallet.listOutputs({
+        basket: 'default',
+        limit: 10000,                    // ✅ Set to maximum to get all outputs (default is only 10!)
+        includeCustomInstructions: true,
+        includeTags: true,
+        includeLabels: true
+      });
+
+      console.log(`[TorrentAppWallet] Storage reports ${result.totalOutputs} total outputs in 'default' basket`);
+      console.log(`[TorrentAppWallet] Retrieved ${result.outputs?.length || 0} outputs from listOutputs()`);
+
+      // Log all outputs for debugging
+      if (result.outputs && result.outputs.length > 0) {
+        console.log(`[TorrentAppWallet] All outputs details:`);
+        result.outputs.forEach((output, index) => {
+          console.log(`  Output ${index + 1}:`, {
+            satoshis: output.satoshis,
+            spendable: output.spendable,
+            outpoint: output.outpoint,
+            lockingScriptPrefix: output.lockingScript?.substring(0, 40) + '...',
+            tags: output.tags,
+            labels: output.labels
+          });
+        });
+      } else {
+        console.warn('[TorrentAppWallet] ⚠️ No outputs found in wallet!');
+      }
+
+      // Access the outputs array from the result object
+      const allOutputs = result.outputs || [];
+
+      // Filter for spendable outputs with positive satoshi value
+      const spendableOutputs = allOutputs.filter(output =>
+        output.spendable && output.satoshis > 0
       );
 
-      const totalSatoshis = spendableOutputs.reduce((sum, output) => sum + output.satoshis, 0);
+      // Filter for non-spendable outputs (considered pending/locked)
+      const nonSpendableOutputs = allOutputs.filter(output =>
+        !output.spendable && output.satoshis > 0
+      );
 
-      // For now, all spendable balance is available (no pending tracking)
+      // Calculate balances
+      const totalSatoshis = spendableOutputs.reduce((sum, output) => sum + output.satoshis, 0);
+      const pendingSatoshis = nonSpendableOutputs.reduce((sum, output) => sum + output.satoshis, 0);
       const availableSatoshis = totalSatoshis;
-      const pendingSatoshis = 0;
+
+      console.log(`[TorrentAppWallet] ========== Balance Summary ==========`);
+      console.log(`[TorrentAppWallet] Total outputs in storage: ${result.totalOutputs}`);
+      console.log(`[TorrentAppWallet] Outputs retrieved: ${allOutputs.length}`);
+      console.log(`[TorrentAppWallet] Spendable outputs: ${spendableOutputs.length}`);
+      console.log(`[TorrentAppWallet] Non-spendable outputs: ${nonSpendableOutputs.length}`);
+      console.log(`[TorrentAppWallet] Total spendable balance: ${totalSatoshis} satoshis (${this.formatSatoshisToBSV(totalSatoshis)} BSV)`);
+      console.log(`[TorrentAppWallet] Pending/locked balance: ${pendingSatoshis} satoshis (${this.formatSatoshisToBSV(pendingSatoshis)} BSV)`);
+      console.log(`[TorrentAppWallet] Grand total: ${totalSatoshis + pendingSatoshis} satoshis`);
+      console.log(`[TorrentAppWallet] =====================================`);
 
       return {
         totalSatoshis,
@@ -207,6 +282,9 @@ export class TorrentAppWalletService {
 
     } catch (error) {
       console.error('[TorrentAppWallet] Failed to get balance:', error);
+      if (error instanceof Error) {
+        console.error('[TorrentAppWallet] Error stack:', error.stack);
+      }
       throw new Error(`Balance retrieval failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -290,20 +368,23 @@ export class TorrentAppWalletService {
 
     try {
       // Get recent actions/transactions
-      const outputs = await wallet.listOutputs();
+      // listOutputs() returns { totalOutputs, outputs, BEEF? } - NOT a direct array
+      const result = await wallet.listOutputs({
+        basket: 'default'
+      });
 
-      // Convert outputs to transaction history format
-      const transactions: WalletTransaction[] = outputs
+      // Access the outputs array from the result object
+      const transactions: WalletTransaction[] = result.outputs
         .slice(0, limit)
         .map(output => ({
-          txid: output.txid || '',
+          txid: output.outpoint?.split('.')[0] || '', // Extract TXID from outpoint
           amount: output.satoshis,
           type: output.spendable ? 'incoming' : 'outgoing',
           purpose: 'torrent_activity',
-          description: output.outputDescription || 'BSV Torrent transaction',
+          description: 'BSV Torrent transaction',
           timestamp: new Date(), // Would come from blockchain data
           confirmations: 6, // Would come from blockchain data
-          status: output.spent ? 'confirmed' : 'pending'
+          status: 'confirmed' // All outputs in wallet are confirmed
         }));
 
       return transactions;
@@ -381,6 +462,126 @@ export class TorrentAppWalletService {
    */
   private formatSatoshisToBSV(satoshis: number): string {
     return (satoshis / 100000000).toFixed(8);
+  }
+
+  /**
+   * Withdraw funds from app wallet to user's client wallet
+   * Enforces withdrawal limits for security
+   */
+  async withdrawToClientWallet(
+    clientAddress: string,
+    amountSatoshis: number,
+    userIdentifier?: string
+  ): Promise<string> {
+    // Validate withdrawal amount against per-transaction limit
+    if (amountSatoshis > this.withdrawalLimits.perTransaction) {
+      throw new Error(
+        `Withdrawal amount (${amountSatoshis} sats) exceeds per-transaction limit of ${this.withdrawalLimits.perTransaction} sats`
+      );
+    }
+
+    // Check daily withdrawal limit
+    const today = new Date().toISOString().split('T')[0];
+    const dailyKey = userIdentifier || 'default';
+    const dailyData = this.dailyWithdrawals.get(dailyKey);
+
+    let dailyTotal = 0;
+    if (dailyData && dailyData.date === today) {
+      dailyTotal = dailyData.total;
+    }
+
+    if (dailyTotal + amountSatoshis > this.withdrawalLimits.daily) {
+      throw new Error(
+        `Daily withdrawal limit exceeded. Today's withdrawals: ${dailyTotal} sats, limit: ${this.withdrawalLimits.daily} sats`
+      );
+    }
+
+    // Process the withdrawal
+    const txid = await this.sendPayment({
+      recipientAddress: clientAddress,
+      amountSatoshis,
+      purpose: 'withdrawal',
+      transactionDescription: `User withdrawal: ${amountSatoshis} sats`
+    });
+
+    // Update daily withdrawal tracking
+    this.dailyWithdrawals.set(dailyKey, {
+      date: today,
+      total: dailyTotal + amountSatoshis
+    });
+
+    // Log the withdrawal for audit trail
+    await this.logAuditEntry({
+      timestamp: new Date(),
+      operation: 'withdrawal',
+      amount: amountSatoshis,
+      txid,
+      userIdentifier,
+      purpose: 'client_withdrawal',
+      status: 'completed'
+    });
+
+    if (this.config.enableLogging) {
+      console.log(`[TorrentAppWallet] Withdrawal completed: ${amountSatoshis} sats to ${clientAddress.substring(0, 16)}...`);
+    }
+
+    return txid;
+  }
+
+  /**
+   * Get withdrawal limits configuration
+   */
+  getWithdrawalLimits(): WithdrawalLimits {
+    return { ...this.withdrawalLimits };
+  }
+
+  /**
+   * Update withdrawal limits (admin operation)
+   */
+  setWithdrawalLimits(limits: Partial<WithdrawalLimits>): void {
+    if (limits.perTransaction !== undefined) {
+      this.withdrawalLimits.perTransaction = limits.perTransaction;
+    }
+    if (limits.daily !== undefined) {
+      this.withdrawalLimits.daily = limits.daily;
+    }
+
+    if (this.config.enableLogging) {
+      console.log('[TorrentAppWallet] Withdrawal limits updated:', this.withdrawalLimits);
+    }
+  }
+
+  /**
+   * Log audit entry for wallet operations
+   * In production, this should write to a persistent database
+   */
+  private async logAuditEntry(entry: AuditLogEntry): Promise<void> {
+    // For now, just log to console
+    // In production, store in MongoDB or similar
+    if (this.config.enableLogging) {
+      console.log('[TorrentAppWallet] Audit Log:', JSON.stringify(entry, null, 2));
+    }
+
+    // TODO: Implement persistent storage
+    // await this.storageProvider.insertOne({
+    //   type: 'wallet-audit',
+    //   ...entry
+    // });
+  }
+
+  /**
+   * Get today's withdrawal total for a user
+   */
+  getTodayWithdrawals(userIdentifier?: string): number {
+    const today = new Date().toISOString().split('T')[0];
+    const dailyKey = userIdentifier || 'default';
+    const dailyData = this.dailyWithdrawals.get(dailyKey);
+
+    if (dailyData && dailyData.date === today) {
+      return dailyData.total;
+    }
+
+    return 0;
   }
 
   /**

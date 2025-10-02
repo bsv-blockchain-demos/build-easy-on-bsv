@@ -4,25 +4,33 @@ import React, { createContext, useContext, useEffect, useState, useCallback, Rea
 import { WalletClient } from '@bsv/sdk';
 
 export interface BSVWalletState {
-  walletClient: WalletClient | null;
-  wallet: WalletClient | null; // Alias for compatibility
-  isConnected: boolean;
-  isLoading: boolean;
-  address: string | null;
-  publicKey: string | null;
+  // App wallet (server-side) state - THIS IS WHAT SHOWS IN THE UI
   balance: number;
   formattedBalance: string;
+  address: string | null;
+  publicKey: string | null;
+  isLoading: boolean;
   error: string | null;
   connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'error';
-  isAuthenticated: boolean;
+
+  // Client wallet (for deposits/withdrawals only) state
+  clientWallet: WalletClient | null;
+  clientConnected: boolean;
+  clientAuthenticated: boolean;
 }
 
 export interface BSVWalletActions {
-  connectWallet: () => Promise<void>;
-  disconnectWallet: () => Promise<void>;
-  sendToServerWallet: (amountSatoshis: number, purpose: string) => Promise<string>;
+  // App wallet actions
+  refreshBalance: () => Promise<void>;
+
+  // Client wallet actions (for deposits/withdrawals)
+  connectClientWallet: () => Promise<void>;
+  disconnectClientWallet: () => Promise<void>;
+  depositToAppWallet: (amountSatoshis: number) => Promise<string>;
+  withdrawFromAppWallet: (clientAddress: string, amountSatoshis: number) => Promise<string>;
+
+  // Utility
   clearError: () => void;
-  refreshConnection: () => Promise<void>;
 }
 
 export interface BSVWalletContextType {
@@ -38,17 +46,19 @@ interface BSVWalletProviderProps {
 
 export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
   const [state, setState] = useState<BSVWalletState>({
-    walletClient: null,
-    wallet: null,
-    isConnected: false,
-    isLoading: true,
-    address: null,
-    publicKey: null,
+    // App wallet state (from server)
     balance: 0,
     formattedBalance: '0.00000000',
+    address: null,
+    publicKey: null,
+    isLoading: true,
     error: null,
     connectionStatus: 'disconnected',
-    isAuthenticated: false,
+
+    // Client wallet state
+    clientWallet: null,
+    clientConnected: false,
+    clientAuthenticated: false,
   });
 
   const updateState = (updates: Partial<BSVWalletState>) => {
@@ -56,14 +66,53 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
   };
 
   /**
-   * Connect to user's BRC-100 compliant wallet (browser extension, mobile app, etc.)
-   * This follows the CommonSourceOnboarding pattern for client-side wallet connection
+   * Fetch app wallet balance from the server API
    */
-  const connectWallet = useCallback(async (): Promise<void> => {
+  const refreshBalance = useCallback(async (): Promise<void> => {
     try {
-      updateState({ isLoading: true, error: null, connectionStatus: 'connecting' });
+      const response = await fetch('/api/wallet/balance');
 
-      // Try different substrates in order of preference (like CommonSourceOnboarding)
+      if (!response.ok) {
+        throw new Error('Failed to fetch wallet balance');
+      }
+
+      const { success, data } = await response.json();
+
+      // Validate response structure - expect WalletBalance object
+      if (!success || !data || typeof data.totalSatoshis !== 'number') {
+        console.error('[AppWallet] Invalid balance response:', { success, data });
+        throw new Error('Invalid balance response');
+      }
+
+      const balanceSatoshis = data.totalSatoshis;
+      const formattedBalance = data.formattedBalance || (balanceSatoshis / 100000000).toFixed(8);
+
+      console.log(`[AppWallet] Balance: ${balanceSatoshis} satoshis (${formattedBalance} BSV)`);
+      console.log(`[AppWallet] Available: ${data.availableSatoshis} sats, Pending: ${data.pendingSatoshis} sats`);
+
+      updateState({
+        balance: balanceSatoshis,
+        formattedBalance,
+        connectionStatus: 'connected'
+      });
+
+    } catch (error) {
+      console.error('[AppWallet] Failed to fetch balance:', error);
+      updateState({
+        error: error instanceof Error ? error.message : 'Failed to fetch balance',
+        connectionStatus: 'error'
+      });
+    }
+  }, []);
+
+  /**
+   * Connect to user's BRC-100 compliant client wallet (for deposits/withdrawals)
+   */
+  const connectClientWallet = useCallback(async (): Promise<void> => {
+    try {
+      updateState({ isLoading: true, error: null });
+
+      // Try different substrates in order of preference
       const substrates = [
         { name: 'auto', config: 'auto' as const },
         { name: 'window.CWI', config: 'window.CWI' as const },
@@ -71,114 +120,93 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
         { name: 'json-api', config: 'json-api' as const }
       ];
 
-      let walletClient = null;
+      let clientWallet = null;
       let lastError = null;
       const errors = [];
 
       for (const substrate of substrates) {
         try {
-          console.log(`[BSVWallet] Trying substrate: ${substrate.name}`);
-          walletClient = new WalletClient(substrate.config, 'localhost');
+          console.log(`[ClientWallet] Trying substrate: ${substrate.name}`);
+          clientWallet = new WalletClient(substrate.config, 'localhost');
 
-          // Force connection to substrate
-          await walletClient.connectToSubstrate();
-          console.log(`[BSVWallet] Connected to substrate: ${substrate.name}`);
+          await clientWallet.connectToSubstrate();
+          console.log(`[ClientWallet] Connected to substrate: ${substrate.name}`);
 
-          // Test authentication
-          const authResult = await walletClient.isAuthenticated();
+          const authResult = await clientWallet.isAuthenticated();
           const isAuthenticated = authResult.authenticated;
-          console.log(`[BSVWallet] Authentication result: ${isAuthenticated}`);
 
           if (isAuthenticated) {
-            // Get public key to verify full functionality
-            const { publicKey } = await walletClient.getPublicKey({ identityKey: true });
-            console.log(`[BSVWallet] Got public key: ${publicKey?.substring(0, 16)}...`);
+            const { publicKey } = await clientWallet.getPublicKey({ identityKey: true });
+            console.log(`[ClientWallet] Authenticated with pubkey: ${publicKey?.substring(0, 16)}...`);
 
             updateState({
-              walletClient,
-              wallet: walletClient,
-              isConnected: true,
+              clientWallet,
+              clientConnected: true,
+              clientAuthenticated: true,
               isLoading: false,
-              publicKey,
-              address: publicKey, // For display purposes
-              connectionStatus: 'connected',
-              isAuthenticated: true,
             });
 
-            console.log(`[BSVWallet] Successfully connected with substrate: ${substrate.name}`);
+            console.log(`[ClientWallet] Successfully connected with substrate: ${substrate.name}`);
             return;
           } else {
-            console.warn(`[BSVWallet] Substrate ${substrate.name} connected but not authenticated`);
-            errors.push(`${substrate.name}: Connected but not authenticated`);
+            errors.push(`${substrate.name}: Not authenticated`);
           }
         } catch (error) {
-          console.error(`[BSVWallet] Substrate ${substrate.name} failed:`, error instanceof Error ? error.message : error);
+          console.error(`[ClientWallet] Substrate ${substrate.name} failed:`, error instanceof Error ? error.message : error);
           errors.push(`${substrate.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
           lastError = error;
           continue;
         }
       }
 
-      // If we get here, all substrates failed
-      console.error('[BSVWallet] All substrate attempts failed:', errors);
       throw new Error(`Failed to connect to any wallet substrate. Last error: ${lastError instanceof Error ? lastError.message : 'Unknown error'}`);
 
     } catch (error) {
-      console.error('Failed to connect wallet:', error);
+      console.error('[ClientWallet] Connection failed:', error);
       updateState({
         isLoading: false,
-        error: error instanceof Error ? error.message : 'Failed to connect wallet',
-        connectionStatus: 'error',
-      });
-    }
-  }, []); // Empty deps - updateState is stable
-
-  /**
-   * Disconnect from user's wallet
-   */
-  const disconnectWallet = useCallback(async (): Promise<void> => {
-    try {
-      updateState({
-        walletClient: null,
-        wallet: null,
-        isConnected: false,
-        isLoading: false,
-        address: null,
-        publicKey: null,
-        balance: 0,
-        formattedBalance: '0.00000000',
-        error: null,
-        connectionStatus: 'disconnected',
-        isAuthenticated: false,
-      });
-    } catch (error) {
-      console.error('Failed to disconnect wallet:', error);
-      updateState({
-        error: error instanceof Error ? error.message : 'Failed to disconnect wallet',
+        error: error instanceof Error ? error.message : 'Failed to connect client wallet',
       });
     }
   }, []);
 
   /**
-   * Send payment from user's wallet to the server wallet
-   * This uses the user's BRC-100 wallet to send funds to the app wallet
+   * Disconnect from client wallet
    */
-  const sendToServerWallet = useCallback(async (amountSatoshis: number, purpose: string): Promise<string> => {
-    if (!state.walletClient || !state.isConnected) {
-      throw new Error('Wallet not connected');
+  const disconnectClientWallet = useCallback(async (): Promise<void> => {
+    try {
+      updateState({
+        clientWallet: null,
+        clientConnected: false,
+        clientAuthenticated: false,
+        isLoading: false,
+        error: null,
+      });
+    } catch (error) {
+      console.error('[ClientWallet] Disconnect failed:', error);
+      updateState({
+        error: error instanceof Error ? error.message : 'Failed to disconnect client wallet',
+      });
+    }
+  }, []);
+
+  /**
+   * Deposit from client wallet to app wallet
+   */
+  const depositToAppWallet = useCallback(async (amountSatoshis: number): Promise<string> => {
+    if (!state.clientWallet || !state.clientConnected) {
+      throw new Error('Client wallet not connected');
     }
 
     try {
-      // First, get a payment request from the server wallet
+      // Get payment request from app wallet
       const response = await fetch('/api/wallet/payment-request', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           amountSatoshis,
-          purpose,
-          description: `BSV Torrent ${purpose} funding`
+          purpose: 'torrent_download',
+          description: `Deposit ${amountSatoshis} satoshis to app wallet`
         })
       });
 
@@ -188,61 +216,75 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
 
       const { data: paymentRequest } = await response.json();
 
-      // Create BRC-100 compliant action using user's wallet
-      const action = await state.walletClient.createAction({
-        description: `BSV Torrent Payment: ${amountSatoshis} satoshis to app wallet`,
+      // Create transaction from client wallet
+      const action = await state.clientWallet.createAction({
+        description: `Deposit ${amountSatoshis} satoshis to BSV Torrent`,
         outputs: [{
-          lockingScript: paymentRequest.paymentAddress, // Server wallet address
+          lockingScript: paymentRequest.paymentAddress,
           satoshis: amountSatoshis,
-          outputDescription: `BSV Torrent ${purpose} payment`
+          outputDescription: 'Deposit to app wallet'
         }]
       });
 
-      const txid = action.txid;
-
-      if (!txid) {
-        throw new Error('Transaction creation failed - no txid returned');
+      if (!action.txid) {
+        throw new Error('Transaction failed - no txid');
       }
 
-      console.log(`[BSVWallet] Payment sent to server wallet: ${txid}`);
-      return txid;
+      console.log(`[ClientWallet] Deposited ${amountSatoshis} sats, txid: ${action.txid}`);
+
+      // Refresh app wallet balance after deposit
+      await refreshBalance();
+
+      return action.txid;
 
     } catch (error) {
-      console.error('Failed to send payment to server wallet:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Payment failed';
+      console.error('[ClientWallet] Deposit failed:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Deposit failed';
       updateState({ error: errorMessage });
       throw new Error(errorMessage);
     }
-  }, [state.walletClient, state.isConnected]); // Depends on wallet state
+  }, [state.clientWallet, state.clientConnected, refreshBalance]);
 
   /**
-   * Refresh wallet connection status
+   * Withdraw from app wallet to client wallet address
    */
-  const refreshConnection = useCallback(async (): Promise<void> => {
-    if (!state.walletClient) {
-      return;
-    }
-
+  const withdrawFromAppWallet = useCallback(async (clientAddress: string, amountSatoshis: number): Promise<string> => {
     try {
-      const authResult = await state.walletClient.isAuthenticated();
-      const isAuthenticated = authResult.authenticated;
-
-      updateState({
-        isAuthenticated,
-        isConnected: isAuthenticated,
-        connectionStatus: isAuthenticated ? 'connected' : 'disconnected'
+      const response = await fetch('/api/wallet/send-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipientAddress: clientAddress,
+          amountSatoshis,
+          purpose: 'withdrawal',
+          description: `Withdraw ${amountSatoshis} satoshis to ${clientAddress}`
+        })
       });
+
+      if (!response.ok) {
+        throw new Error('Failed to send withdrawal');
+      }
+
+      const { success, data } = await response.json();
+
+      if (!success || !data.txid) {
+        throw new Error('Withdrawal failed - no txid');
+      }
+
+      console.log(`[AppWallet] Withdrew ${amountSatoshis} sats to ${clientAddress}, txid: ${data.txid}`);
+
+      // Refresh app wallet balance after withdrawal
+      await refreshBalance();
+
+      return data.txid;
 
     } catch (error) {
-      console.error('Failed to refresh connection:', error);
-      updateState({
-        isAuthenticated: false,
-        isConnected: false,
-        connectionStatus: 'error',
-        error: error instanceof Error ? error.message : 'Connection refresh failed',
-      });
+      console.error('[AppWallet] Withdrawal failed:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Withdrawal failed';
+      updateState({ error: errorMessage });
+      throw new Error(errorMessage);
     }
-  }, [state.walletClient]); // Depends on wallet client
+  }, [refreshBalance]);
 
   /**
    * Clear error state
@@ -251,38 +293,51 @@ export function BSVWalletProvider({ children }: BSVWalletProviderProps) {
     updateState({ error: null });
   }, []);
 
-  // Initialize wallet on mount
+  // Fetch app wallet balance on mount and every 30 seconds
   useEffect(() => {
-    const initializeWallet = async () => {
+    // Initial balance fetch
+    refreshBalance();
+
+    // Set up periodic refresh
+    const interval = setInterval(refreshBalance, 30000);
+
+    return () => clearInterval(interval);
+  }, [refreshBalance]);
+
+  // Fetch app wallet info (address, pubkey) on mount
+  useEffect(() => {
+    const fetchWalletInfo = async () => {
       try {
-        // Try to connect to user's wallet
-        await connectWallet();
-      } catch (error) {
-        // If connection fails, set to disconnected state
-        updateState({
-          isLoading: false,
-          connectionStatus: 'disconnected'
+        const response = await fetch('/api/wallet/initialize', {
+          method: 'POST'
         });
+
+        if (response.ok) {
+          const { success, data } = await response.json();
+          if (success && data) {
+            updateState({
+              address: data.publicKey || null,
+              publicKey: data.publicKey || null,
+              isLoading: false
+            });
+          }
+        }
+      } catch (error) {
+        console.error('[AppWallet] Failed to fetch wallet info:', error);
+        updateState({ isLoading: false });
       }
     };
 
-    initializeWallet();
-  }, [connectWallet]); // Include connectWallet dependency
-
-  // Set up periodic connection refresh when connected
-  useEffect(() => {
-    if (state.isConnected && state.walletClient) {
-      const interval = setInterval(refreshConnection, 30000); // Refresh every 30 seconds
-      return () => clearInterval(interval);
-    }
-  }, [state.isConnected, state.walletClient, refreshConnection]); // Include all dependencies
+    fetchWalletInfo();
+  }, []);
 
   const actions: BSVWalletActions = {
-    connectWallet,
-    disconnectWallet,
-    sendToServerWallet,
+    refreshBalance,
+    connectClientWallet,
+    disconnectClientWallet,
+    depositToAppWallet,
+    withdrawFromAppWallet,
     clearError,
-    refreshConnection,
   };
 
   const contextValue: BSVWalletContextType = {
@@ -305,21 +360,31 @@ export function useBSVWallet() {
   return context;
 }
 
-// Convenience hooks for specific wallet state
-export function useWalletConnection() {
+// Convenience hook for app wallet state
+export function useAppWallet() {
   const { state, actions } = useBSVWallet();
   return {
-    isConnected: state.isConnected,
-    isLoading: state.isLoading,
-    connectionStatus: state.connectionStatus,
+    balance: state.balance,
+    formattedBalance: state.formattedBalance,
     address: state.address,
     publicKey: state.publicKey,
+    isLoading: state.isLoading,
     error: state.error,
-    isAuthenticated: state.isAuthenticated,
-    connect: actions.connectWallet,
-    disconnect: actions.disconnectWallet,
-    sendToServerWallet: actions.sendToServerWallet,
+    connectionStatus: state.connectionStatus,
+    refreshBalance: actions.refreshBalance,
     clearError: actions.clearError,
-    refreshConnection: actions.refreshConnection,
+  };
+}
+
+// Convenience hook for client wallet state (deposits/withdrawals)
+export function useClientWallet() {
+  const { state, actions } = useBSVWallet();
+  return {
+    clientConnected: state.clientConnected,
+    clientAuthenticated: state.clientAuthenticated,
+    connectClientWallet: actions.connectClientWallet,
+    disconnectClientWallet: actions.disconnectClientWallet,
+    depositToAppWallet: actions.depositToAppWallet,
+    withdrawFromAppWallet: actions.withdrawFromAppWallet,
   };
 }
