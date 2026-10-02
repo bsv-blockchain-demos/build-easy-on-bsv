@@ -54,5 +54,6 @@
     "tailwindcss": "^4",
     "ts-jest": "^29.4.2",
     "typescript": "^5"
-  }
+  },
+  "license": "SEE LICENSE IN LICENSE.txt"
 }
